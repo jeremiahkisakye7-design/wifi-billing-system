@@ -1,0 +1,9 @@
+{
+  "name": "WiFi Billing System",
+  "short_name": "WiFi Billing",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07111a",
+  "theme_color": "#0ea5e9",
+  "icons": []
+}

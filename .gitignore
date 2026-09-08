@@ -1,0 +1,10 @@
+billing.db
+__pycache__/
+*.pyc
+.env
+.validation-data/
+.auth-validation/
+.router-validation/
+.feature-validation/
+.final-validation/
+wifi-billing-netlify.zip

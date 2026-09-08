@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Instant WiFi</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  </head>
+  <body>
+    <div id="protectedInfoModal" class="modal hidden">
+      <div class="modal-content protected-modal">
+        <button type="button" class="close-btn" data-close-modal>✕</button>
+        <h2>🔐 Access Restricted</h2>
+        <p>Admin password required to view payment and device information</p>
+        <form id="protectedAccessForm">
+          <label>
+            <span>Admin Password</span>
+            <input type="password" id="protectedPassword" placeholder="Enter password" required />
+          </label>
+          <button type="submit" class="primary-btn">Unlock</button>
+        </form>
+        <p class="password-hint">Contact system administrator for access</p>
+      </div>
+    </div>
+
+    <div id="qrModal" class="modal hidden">
+      <div class="modal-content qr-modal">
+        <button type="button" class="close-btn" data-close-modal>✕</button>
+        <div class="qr-container">
+          <div class="qr-icon-section">
+            <svg class="wifi-icon-large" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+              <defs><style>.wifi-fill { fill: #00d4ff; }</style></defs>
+              <circle cx="100" cy="100" r="95" class="wifi-fill" opacity="0.1" stroke="#00d4ff" stroke-width="2"/>
+              <path d="M100 180 A20 20 0 1 1 100 140 A20 20 0 1 1 100 180" class="wifi-fill"/>
+              <path d="M65 130 Q100 85 135 130" class="wifi-fill" fill="none" stroke-width="8" stroke-linecap="round"/>
+              <path d="M45 110 Q100 55 155 110" class="wifi-fill" fill="none" stroke-width="8" stroke-linecap="round" opacity="0.7"/>
+              <path d="M25 90 Q100 25 175 90" class="wifi-fill" fill="none" stroke-width="8" stroke-linecap="round" opacity="0.4"/>
+            </svg>
+          </div>
+          <h2>WiFi Access</h2>
+          <p>Scan the QR code below to access the WiFi billing system</p>
+          <div id="qrCodeContainer" style="display: flex; justify-content: center; margin: 20px 0;"></div>
+          <p class="qr-hint">📱 Use any smartphone camera or QR scanner app</p>
+          <button type="button" id="downloadQRBtn" class="primary-btn">⬇️ Download QR Code</button>
+        </div>
+      </div>
+    </div>
+
+    <section id="publicPortal" class="public-portal">
+      <div class="public-card">
+        <p class="eyebrow center">Simple WiFi access</p>
+        <h1>Instant WiFi</h1>
+        <p class="public-intro">Choose a package and pay for instant WiFi with mobile money. Your wallet will ask for your PIN.</p>
+        <label class="public-field">
+          <span>Mobile money network</span>
+          <select id="publicProvider">
+            <option value="momo">MTN Money</option>
+            <option value="airtel">Airtel Money</option>
+          </select>
+        </label>
+        <div class="public-plans" role="group" aria-label="WiFi packages">
+          <button type="button" class="public-plan selected" data-public-plan="fullDay"><strong>1 Day</strong><span>UGX 1,000</span></button>
+          <button type="button" class="public-plan" data-public-plan="weekly"><strong>1 Week</strong><span>UGX 4,000</span></button>
+          <button type="button" class="public-plan" data-public-plan="monthly"><strong>1 Month</strong><span>UGX 25,000</span></button>
+        </div>
+        <div class="public-total" aria-live="polite">
+          <span>WiFi price</span><strong id="publicPlanTotal">UGX 1,000</strong>
+          <span>Service charge (5%)</span><strong id="publicServiceCharge">UGX 50</strong>
+          <span class="public-total-label">Total to pay</span><strong id="publicAmountDue" class="public-total-value">UGX 1,050</strong>
+        </div>
+        <div class="public-payments">
+          <button type="button" id="publicPayBtn" class="primary-btn">Pay for instant WiFi</button>
+        </div>
+        <p id="publicPaymentStatus" class="public-status" aria-live="polite">Your wallet will open. Enter the total shown above.</p>
+        <div class="voucher-box">
+          <label class="public-field">
+            <span>Already have a WiFi voucher?</span>
+            <input id="voucherInput" type="text" placeholder="Enter voucher code" autocomplete="off" />
+          </label>
+          <button type="button" id="redeemVoucherBtn" class="public-secondary-btn">Use voucher</button>
+          <p id="voucherStatus" class="public-status" aria-live="polite"></p>
+        </div>
+        <button type="button" id="adminAccessBtn" class="admin-access-btn">Admin</button>
+      </div>
+    </section>
+
+    <div id="loginOverlay" class="login-overlay hidden">
+      <div class="login-card">
+        <p class="eyebrow center">Secure access</p>
+        <h2>Admin Login</h2>
+        <form id="loginForm">
+          <label>
+            <span>Username</span>
+            <input id="adminUsername" type="text" value="admin" required />
+          </label>
+          <label>
+            <span>Password</span>
+            <input id="adminPassword" type="password" value="admin123" required />
+          </label>
+          <button type="submit" class="primary-btn login-btn">Access dashboard</button>
+        </form>
+        <button type="button" id="cancelAdminBtn" class="ghost-btn cancel-admin-btn">Back to customer page</button>
+      </div>
+    </div>
+
+    <div class="app-shell hidden" id="adminApp">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Internet service manager</p>
+          <h1>WiFi Billing System</h1>
+        </div>
+        <div class="header-actions">
+          <a href="https://quiet-chimera-4dae8a.netlify.app/" class="ghost-btn" target="_blank" rel="noopener noreferrer">Open live portal</a>
+          <button type="button" id="showQRBtn" class="ghost-btn">📱 Access QR</button>
+          <button type="button" id="logoutBtn" class="ghost-btn hidden">Logout</button>
+          <div class="status-pill">Live billing</div>
+        </div>
+      </header>
+
+      <section class="admin-summary panel">
+        <div class="panel-header">
+          <h2>Admin dashboard</h2>
+          <div class="tiny-actions">
+            <button type="button" class="ghost-btn" id="printInvoiceBtn">Print invoice</button>
+            <button type="button" class="primary-btn small-btn" id="refreshBtn">Refresh</button>
+          </div>
+        </div>
+        <div class="summary-cards">
+          <article class="summary-card">
+            <span>Today sales</span>
+            <strong id="todaySalesCard">UGX 0</strong>
+          </article>
+          <article class="summary-card">
+            <span>Unpaid clients</span>
+            <strong id="unpaidCard">0</strong>
+          </article>
+          <article class="summary-card">
+            <span>Network uptime</span>
+            <strong>99.9%</strong>
+          </article>
+          <article class="summary-card">
+            <span>Cash flow</span>
+            <strong id="cashFlowCard">UGX 0</strong>
+          </article>
+        </div>
+      </section>
+
+      <section class="payment-settings panel">
+        <div class="panel-header">
+          <h2>Payment settings</h2>
+          <span class="muted-badge">Admin only</span>
+        </div>
+        <form id="paymentSettingsForm" class="payment-settings-form">
+          <label>
+            <span>Number that receives payment</span>
+            <input id="paymentRecipientInput" type="tel" inputmode="tel" placeholder="07XXXXXXXX" required />
+          </label>
+          <label>
+            <span>Payment method</span>
+            <select id="paymentMethodSetting">
+              <option value="ussd">Mobile money wallet (USSD)</option>
+              <option value="app">Mobile money app</option>
+              <option value="web">Official provider website</option>
+              <option value="sms">SMS payment request</option>
+              <option value="call">Call payment number</option>
+            </select>
+          </label>
+          <button type="submit" class="primary-btn small-btn">Save payment settings</button>
+          <p id="paymentSettingsStatus" class="payment-note" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <main class="dashboard">
+        <section class="stats-grid" aria-label="Billing stats">
+          <article class="stat-card accent">
+            <span>Total Revenue</span>
+            <strong id="revenueStat">UGX 0</strong>
+          </article>
+          <article class="stat-card">
+            <span>Active Clients</span>
+            <strong id="activeClientsStat">0</strong>
+          </article>
+          <article class="stat-card">
+            <span>Pending Payments</span>
+            <strong id="pendingStat">0</strong>
+          </article>
+          <article class="stat-card">
+            <span>Paid Today</span>
+            <strong id="todayStat">0</strong>
+          </article>
+        </section>
+
+        <section class="content-grid">
+          <div class="panel form-panel">
+            <div class="panel-header">
+              <h2>New WiFi Sale</h2>
+              <button type="button" class="ghost-btn" id="resetBtn">Reset</button>
+            </div>
+
+            <form id="billingForm">
+              <div class="form-row two-col">
+                <label>
+                  <span>Customer name</span>
+                  <input type="text" id="customerName" placeholder="e.g. Jane Mukasa" required />
+                </label>
+                <label>
+                  <span>Phone</span>
+                  <input type="tel" id="customerPhone" placeholder="e.g. +256700123456" required />
+                </label>
+              </div>
+
+              <div class="form-row two-col">
+                <label>
+                  <span>Plan</span>
+                  <select id="planType" required>
+                    <option value="shortSession">Short Session - UGX 500</option>
+                    <option value="fullDay">Full Day - UGX 1,000</option>
+                    <option value="weekly">Weekly - UGX 4,000</option>
+                    <option value="monthly" selected>Monthly - UGX 25,000</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Payment method</span>
+                  <select id="paymentMethod">
+                    <option value="Cash">Cash</option>
+                    <option value="Mobile Money">Mobile Money</option>
+                    <option value="Bank Transfer">Bank Transfer</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="form-row three-col">
+                <label>
+                  <span>Devices <span class="lock-icon" title="Admin only">🔒</span></span>
+                  <input type="number" id="deviceCount" min="1" max="10" value="1" />
+                </label>
+                <label>
+                  <span>Start date</span>
+                  <input type="date" id="startDate" />
+                </label>
+                <label>
+                  <span>Discount (UGX)</span>
+                  <input type="number" id="discount" min="0" value="0" />
+                </label>
+              </div>
+
+              <div class="addons-block">
+                <p>Optional add-ons</p>
+                <div class="check-grid">
+                  <label><input type="checkbox" value="router" class="addon" /> Router setup</label>
+                  <label><input type="checkbox" value="installation" class="addon" /> Installation</label>
+                  <label><input type="checkbox" value="speed" class="addon" /> Speed upgrade</label>
+                  <label><input type="checkbox" value="support" class="addon" /> Premium support</label>
+                </div>
+              </div>
+
+              <div class="receipt-panel" aria-live="polite">
+                <div class="receipt-header">
+                  <h3>Bill preview</h3>
+                  <span id="billNumber">BILL-001</span>
+                </div>
+
+                <div class="summary-lines">
+                  <div><span>Base plan</span><strong id="baseCost">UGX 0</strong></div>
+                  <div><span>Device fee <span class="lock-icon">🔒</span></span><strong id="deviceCost">UGX 0</strong></div>
+                  <div><span>Add-ons</span><strong id="addonCost">UGX 0</strong></div>
+                  <div><span>Tax (15%)</span><strong id="taxCost">UGX 0</strong></div>
+                  <div><span>Discount</span><strong id="discountValue">UGX 0</strong></div>
+                </div>
+
+                <div class="total-row">
+                  <span>Total due</span>
+                  <strong id="totalDue">UGX 0</strong>
+                </div>
+              </div>
+
+              <div class="action-row">
+                <button type="submit" class="primary-btn">Record payment</button>
+              </div>
+
+              <div class="payment-options">
+                <p class="payment-label">Quick pay</p>
+                <div class="payment-buttons-grid">
+                  <button type="button" class="payment-option-btn" data-payment="momo">📱 Open MTN Money</button>
+                  <button type="button" class="payment-option-btn" data-payment="airtel">📱 Open Airtel Money</button>
+                </div>
+                <p class="payment-label portal-label">Payment portals</p>
+                <div class="payment-portals">
+                  <a class="payment-portal-link" href="https://www.mtn.co.ug/momo/" target="_blank" rel="noopener noreferrer">📱 MTN MoMo portal</a>
+                  <a class="payment-portal-link" href="https://www.airtel.co.ug/airtel-money" target="_blank" rel="noopener noreferrer">📱 Airtel Money portal</a>
+                  <a class="payment-portal-link" href="https://www.bou.or.ug/bou/banks_supervised.html" target="_blank" rel="noopener noreferrer">🏦 All licensed banks</a>
+                </div>
+                <button type="button" id="sendPaymentDetailsBtn" class="payment-request-btn">✉️ Message payment details to 0741808601</button>
+                <small class="payment-note">The provider opens in a new tab. Messaging requires your confirmation before sending.</small>
+              </div>
+            </form>
+          </div>
+
+          <aside class="panel records-panel">
+            <div class="panel-header">
+              <h2>Recent clients</h2>
+              <input type="search" id="searchInput" placeholder="Search client" />
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Plan</th>
+                    <th>Amount <span class="lock-icon" title="Admin only">🔒</span></th>
+                    <th>Status</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="billingTableBody"></tbody>
+              </table>
+            </div>
+          </aside>
+        </section>
+      </main>
+
+      <section class="plans-section panel">
+        <div class="panel-header">
+          <h2>WiFi Plans</h2>
+          <span class="muted-badge">Unlimited data</span>
+        </div>
+        <div class="plans-table-wrap">
+          <table class="plans-table">
+            <thead>
+              <tr>
+                <th>Plan</th>
+                <th>Duration</th>
+                <th>Price (UGX)</th>
+                <th>Data Cap</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Short Session</td>
+                <td>6 hours</td>
+                <td>500</td>
+                <td>Unlimited</td>
+              </tr>
+              <tr>
+                <td>Full Day</td>
+                <td>24 hours</td>
+                <td>1,000</td>
+                <td>Unlimited</td>
+              </tr>
+              <tr>
+                <td>Weekly</td>
+                <td>7 days</td>
+                <td>4,000</td>
+                <td>Unlimited</td>
+              </tr>
+              <tr>
+                <td>Monthly</td>
+                <td>30 days</td>
+                <td>25,000</td>
+                <td>Unlimited</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="features-section panel">
+        <div class="panel-header">
+          <h2>🚀 Premium Features</h2>
+        </div>
+        <div class="features-grid">
+          <div class="feature-card">
+            <span class="feature-icon">⚡</span>
+            <h3>Auto-Renewal</h3>
+            <p>Plans automatically renew on expiry date</p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">📊</span>
+            <h3>Real-Time Usage</h3>
+            <p>Track bandwidth and data usage live</p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">🎁</span>
+            <h3>Loyalty Rewards</h3>
+            <p>Earn points with every purchase</p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">📱</span>
+            <h3>Quick WiFi Access</h3>
+            <p>One-tap connection to available networks</p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">🔔</span>
+            <h3>Smart Alerts</h3>
+            <p>Get notified before plan expires</p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">💰</span>
+            <h3>Save Plans</h3>
+            <p>Bundle and save up to 20%</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="networks-section panel">
+        <div class="panel-header">
+          <h2>Available WiFi Networks</h2>
+          <button type="button" id="connectWiFiBtn" class="primary-btn small-btn">🔗 Quick Connect</button>
+        </div>
+        <div id="wifiNetworksList" class="networks-list"></div>
+      </section>
+
+      <section class="reports-section panel">
+        <div class="panel-header">
+          <h2>Session & report overview</h2>
+        </div>
+        <div class="report-grid">
+          <div class="report-card">
+            <h3>Expiring soon</h3>
+            <ul id="expiringList"></ul>
+          </div>
+          <div class="report-card">
+            <h3>Monthly report</h3>
+            <ul id="monthlyReportList"></ul>
+          </div>
+          <div class="report-card">
+            <h3>Admin users</h3>
+            <ul id="adminUsersList"></ul>
+            <form id="addUserForm" class="mini-form">
+              <input type="text" id="newUserName" placeholder="New username" required />
+              <input type="password" id="newUserPassword" placeholder="Password" required />
+              <button type="submit" class="primary-btn small-btn">Add user</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <section class="invoices-section panel">
+        <div class="panel-header">
+          <h2>Recent Invoices</h2>
+          <button type="button" id="viewAllInvoicesBtn" class="ghost-btn">View all</button>
+        </div>
+        <div id="invoicesList" class="invoices-list"></div>
+      </section>
+
+      <section class="router-section panel">
+        <div class="panel-header">
+          <h2>Router Management</h2>
+          <button type="button" id="addRouterBtn" class="primary-btn small-btn">+ Add router</button>
+        </div>
+        <div id="routersList" class="routers-grid"></div>
+      </section>
+    </div>
+
+    <script src="script.js"></script>
+    <script>
+      // Generate QR code on page load
+      window.addEventListener('load', () => {
+        const appUrl = 'https://quiet-chimera-4dae8a.netlify.app';
+        if (document.getElementById('qrCodeContainer').children.length === 0) {
+          new QRCode(document.getElementById('qrCodeContainer'), {
+            text: appUrl,
+            width: 200,
+            height: 200,
+            colorDark: '#00d4ff',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.H
+          });
+        }
+      });
+
+      document.getElementById('showQRBtn')?.addEventListener('click', () => {
+        document.getElementById('qrModal').classList.remove('hidden');
+      });
+
+      document.getElementById('downloadQRBtn')?.addEventListener('click', () => {
+        const canvas = document.querySelector('#qrCodeContainer canvas');
+        if (canvas) {
+          const link = document.createElement('a');
+          link.href = canvas.toDataURL();
+          link.download = 'wifi-access-qr.png';
+          link.click();
+        }
+      });
+
+      document.querySelectorAll('[data-close-modal]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.target.closest('.modal').classList.add('hidden');
+        });
+      });
+    </script>
+  </body>
+</html>
