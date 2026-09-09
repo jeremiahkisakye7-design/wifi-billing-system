@@ -43,6 +43,7 @@
           <p>Scan the QR code below to access the WiFi billing system</p>
           <div id="qrCodeContainer" style="display: flex; justify-content: center; margin: 20px 0;"></div>
           <p class="qr-hint">📱 Use any smartphone camera or QR scanner app</p>
+          <p class="qr-hint" id="qrLinkText"></p>
           <button type="button" id="downloadQRBtn" class="primary-btn">⬇️ Download QR Code</button>
         </div>
       </div>
@@ -113,6 +114,7 @@
         </div>
         <button type="button" id="adminAccessBtn" class="admin-access-btn">Admin</button>
         <button type="button" id="publicInstallAppBtn" class="admin-access-btn hidden">Install app</button>
+        <button type="button" id="publicShowQRBtn" class="public-secondary-btn">📱 Show QR code to scan</button>
         <p class="support-footer">Need help? Call support: <strong id="supportInquiryNumber">0704270565</strong></p>
       </div>
     </section>
@@ -504,9 +506,15 @@
             correctLevel: QRCode.CorrectLevel.H
           });
         }
+        const qrLinkText = document.getElementById('qrLinkText');
+        if (qrLinkText) qrLinkText.textContent = appUrl;
       });
 
       document.getElementById('showQRBtn')?.addEventListener('click', () => {
+        document.getElementById('qrModal').classList.remove('hidden');
+      });
+
+      document.getElementById('publicShowQRBtn')?.addEventListener('click', () => {
         document.getElementById('qrModal').classList.remove('hidden');
       });
 
