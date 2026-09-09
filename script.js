@@ -42,6 +42,8 @@ const VOUCHERS_KEY = 'wifiBillingVouchers';
 const PAYMENT_INTENT_KEY = 'wifiBillingPaymentIntent';
 const DASHBOARD_KEY = 'wifiBillingActiveVoucher';
 const DEFAULT_PAYMENT_SETTINGS = { method: 'ussd' };
+const SPEED_TIER_MULTIPLIER = { basic: 1, premium: 1.6 };
+let publicSpeedTier = 'basic';
 const SUPPORT_INQUIRY_NUMBER_DEFAULT = '0704270565';
 let SUPPORT_INQUIRY_NUMBER = SUPPORT_INQUIRY_NUMBER_DEFAULT;
 const deviceParams = new URLSearchParams(window.location.search);
@@ -653,7 +655,14 @@ async function openPublicMobileMoney(provider) {
     const response = await fetch(`${API_BASE}/payments/checkout`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ plan: publicPlan, phone, provider, deviceMac: DEVICE_MAC }),
+      body: JSON.stringify({
+        plan: publicPlan,
+        phone,
+        provider,
+        deviceMac: DEVICE_MAC,
+        speedTier: publicSpeedTier,
+        autoRenew: document.getElementById('publicAutoRenew')?.checked || false,
+      }),
     });
     const intent = await response.json();
     if (!response.ok) throw new Error(intent.error || 'Could not start payment');
@@ -766,6 +775,7 @@ function activateDashboard(voucherCode, phone, expiresAt) {
   voucherInput.value = voucherCode;
   publicPaymentStatus.textContent = 'You are connected. See your remaining time below.';
   renderDashboard({ voucherCode, plan: publicPlan, expiresAt });
+  loadStoredDashboard();
 }
 
 function renderDashboard(data) {
@@ -774,6 +784,7 @@ function renderDashboard(data) {
   dashboardPanel.classList.remove('hidden');
   dashboardVoucherEl.textContent = data.voucherCode || '—';
   dashboardPlanEl.textContent = formatPlanName(data.plan || publicPlan);
+  renderDashboardHistory(data.history || []);
   const expiresAtMs = data.expiresAt ? new Date(data.expiresAt).getTime() : 0;
 
   const tick = () => {
@@ -804,13 +815,25 @@ async function loadStoredDashboard() {
     if (!response.ok) return;
     const data = await response.json();
     if (data.isActive) {
-      renderDashboard({ voucherCode: data.voucher_code, plan: data.plan, expiresAt: data.expires_at });
+      renderDashboard({ voucherCode: data.voucher_code, plan: data.plan, expiresAt: data.expires_at, history: data.history });
     } else {
       localStorage.removeItem(DASHBOARD_KEY);
     }
   } catch (error) {
     console.warn('Dashboard unavailable', error);
   }
+}
+
+function renderDashboardHistory(history) {
+  const list = document.getElementById('dashboardHistoryList');
+  if (!list) return;
+  if (!history.length) {
+    list.innerHTML = '';
+    return;
+  }
+  list.innerHTML = history.map((record) => `
+    <li>${formatPlanName(record.plan)} · ${formatCurrency(record.amount)} · ${record.status} · ${record.date}</li>
+  `).join('');
 }
 
 function renewAccess() {
@@ -852,7 +875,7 @@ function loadPaymentSettings() {
 }
 
 function updatePublicAmount() {
-  const planPrice = PLAN_PRICES[publicPlan];
+  const planPrice = Math.round(PLAN_PRICES[publicPlan] * SPEED_TIER_MULTIPLIER[publicSpeedTier]);
   const serviceCharge = Math.ceil(planPrice * SERVICE_CHARGE_RATE);
   publicPlanTotalEl.textContent = formatCurrency(planPrice);
   publicServiceChargeEl.textContent = formatCurrency(serviceCharge);
@@ -1051,6 +1074,15 @@ document.querySelectorAll('[data-public-plan]').forEach((planButton) => {
     publicPlan = planButton.dataset.publicPlan;
     document.querySelectorAll('[data-public-plan]').forEach((button) => button.classList.remove('selected'));
     planButton.classList.add('selected');
+    updatePublicAmount();
+  });
+});
+
+document.querySelectorAll('[data-speed-tier]').forEach((tierButton) => {
+  tierButton.addEventListener('click', () => {
+    publicSpeedTier = tierButton.dataset.speedTier;
+    document.querySelectorAll('[data-speed-tier]').forEach((button) => button.classList.remove('selected'));
+    tierButton.classList.add('selected');
     updatePublicAmount();
   });
 });

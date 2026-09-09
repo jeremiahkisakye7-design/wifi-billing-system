@@ -59,6 +59,14 @@ ALLOWED_PLANS = {"shortSession", "fullDay", "weekly", "monthly"}
 ALLOWED_STATUSES = {"pending", "paid", "expired"}
 PLAN_PRICES = {"shortSession": 500, "fullDay": 1000, "weekly": 4000, "monthly": 25000}
 PLAN_DURATIONS_DAYS = {"shortSession": 0.25, "fullDay": 1, "weekly": 7, "monthly": 30}
+# Bundle deal: a monthly plan includes a bonus week at no extra cost.
+BUNDLE_BONUS_DAYS = {"monthly": 7}
+# Monetization: speed tiers change price and how many devices a single voucher can authorize.
+SPEED_TIER_MULTIPLIER = {"basic": 1.0, "premium": 1.6}
+SPEED_TIER_DEVICE_LIMIT = {"basic": 1, "premium": 3}
+# Loyalty reward: every Nth paid purchase from the same phone gets a percentage discount.
+LOYALTY_PURCHASES_INTERVAL = 5
+LOYALTY_DISCOUNT_PERCENT = 10
 
 PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "manual").lower()
 
@@ -207,9 +215,25 @@ def init_db():
         conn.execute("ALTER TABLE clients ADD COLUMN expires_at TEXT")
     if "device_mac" not in client_columns:
         conn.execute("ALTER TABLE clients ADD COLUMN device_mac TEXT DEFAULT ''")
+    if "speed_tier" not in client_columns:
+        conn.execute("ALTER TABLE clients ADD COLUMN speed_tier TEXT DEFAULT 'basic'")
+    if "auto_renew" not in client_columns:
+        conn.execute("ALTER TABLE clients ADD COLUMN auto_renew INTEGER DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_date ON clients(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_device_mac ON clients(device_mac)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS voucher_devices (
+            id TEXT PRIMARY KEY,
+            voucher_code TEXT NOT NULL,
+            device_mac TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(voucher_code, device_mac)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_voucher_devices_voucher ON voucher_devices(voucher_code)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS payment_intents (
@@ -287,13 +311,25 @@ def init_db():
             "online",
             0,
             json.dumps({
-                "mac": "74:F8:D6:3B:E9:7D",
+                "mac": "74:F8:DB:63:BE:97",
                 "imei": "353899266529310",
                 "serialNumber": "GUVECM160224",
                 "power": "5V / 2A",
+                "wifiKey": "1234567890",
                 "captivePortalUrl": "https://wifi-billing-system-e14d.onrender.com/",
             }),
         ),
+    )
+    conn.execute(
+        "UPDATE routers SET details = ? WHERE id = 'router-cpe-b07'",
+        (json.dumps({
+            "mac": "74:F8:DB:63:BE:97",
+            "imei": "353899266529310",
+            "serialNumber": "GUVECM160224",
+            "power": "5V / 2A",
+            "wifiKey": "1234567890",
+            "captivePortalUrl": "https://wifi-billing-system-e14d.onrender.com/",
+        }),),
     )
 
     existing = conn.execute("SELECT COUNT(*) AS total FROM clients").fetchone()["total"]
@@ -471,7 +507,8 @@ def mark_intent_paid(conn, intent, reference):
     confirmed_at = utc_now().isoformat()
     client = conn.execute("SELECT plan FROM clients WHERE id = ?", (intent["client_id"],)).fetchone()
     voucher_code = f"WIFI-{secrets.token_hex(4).upper()}"
-    expires_at = (utc_now() + timedelta(days=PLAN_DURATIONS_DAYS.get(client["plan"], 30))).isoformat()
+    total_days = PLAN_DURATIONS_DAYS.get(client["plan"], 30) + BUNDLE_BONUS_DAYS.get(client["plan"], 0)
+    expires_at = (utc_now() + timedelta(days=total_days)).isoformat()
     conn.execute(
         "UPDATE payment_intents SET status = 'paid', provider_reference = ?, confirmed_at = ? WHERE id = ?",
         (reference, confirmed_at, intent["id"]),
@@ -534,8 +571,12 @@ def checkout():
     phone = str(payload.get("phone", "")).strip()
     provider = str(payload.get("provider", "")).lower()
     device_mac = str(payload.get("deviceMac", "")).strip()[:64]
+    speed_tier = str(payload.get("speedTier", "basic")).lower()
+    auto_renew = 1 if payload.get("autoRenew") else 0
     if plan not in PLAN_PRICES or not phone or provider not in {"momo", "airtel"}:
         return jsonify({"error": "Plan, phone, and payment provider are required."}), 400
+    if speed_tier not in SPEED_TIER_MULTIPLIER:
+        speed_tier = "basic"
     digits_only = phone.lstrip("+")
     if not digits_only.isdigit() or len(digits_only) < 9 or len(digits_only) > 15:
         return jsonify({"error": "Enter a valid phone number."}), 400
@@ -543,7 +584,17 @@ def checkout():
         log_activity("checkout_blocked_fraud", f"phone={mask_phone(phone)}")
         return jsonify({"error": "Too many failed payment attempts. Please try again later."}), 429
 
-    amount = PLAN_PRICES[plan] + (PLAN_PRICES[plan] * 5 + 99) // 100
+    conn = get_db_connection()
+    prior_paid_count = conn.execute(
+        "SELECT COUNT(*) AS total FROM clients WHERE phone = ? AND status = 'paid'", (phone,)
+    ).fetchone()["total"]
+    conn.close()
+    loyalty_discount_applied = prior_paid_count > 0 and (prior_paid_count + 1) % LOYALTY_PURCHASES_INTERVAL == 0
+
+    base_price = round(PLAN_PRICES[plan] * SPEED_TIER_MULTIPLIER[speed_tier])
+    if loyalty_discount_applied:
+        base_price = round(base_price * (100 - LOYALTY_DISCOUNT_PERCENT) / 100)
+    amount = base_price + (base_price * 5 + 99) // 100
     now = utc_now()
     client_id = f"public-{now.strftime('%Y%m%d%H%M%S%f')}"
     intent_id = f"pay-{now.strftime('%Y%m%d%H%M%S%f')}"
@@ -553,11 +604,11 @@ def checkout():
     conn.execute(
         """
         INSERT INTO clients (id, customer_name, phone, plan, payment_method, device_count,
-            date, amount, discount, status, addons, router_id, device_mac, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            date, amount, discount, status, addons, router_id, device_mac, speed_tier, auto_renew, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (client_id, "Public customer", phone, plan, provider, 1, now.strftime("%Y-%m-%d"),
-         amount, 0, "pending", "[]", "", device_mac, now.isoformat()),
+         amount, 0, "pending", "[]", "", device_mac, speed_tier, auto_renew, now.isoformat()),
     )
     conn.execute(
         "INSERT INTO payment_intents (id, client_id, provider, amount, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -718,8 +769,8 @@ def payment_intent_status(intent_id):
 @limiter.limit("60 per minute")
 def validate_access():
     """Endpoint for a router/captive-portal integration to confirm whether a voucher
-    or phone number currently has active, paid WiFi access. A voucher is bound to the
-    device MAC that redeemed it first, preventing reuse or sharing across devices."""
+    or phone number currently has active, paid WiFi access. A voucher is bound to up to
+    SPEED_TIER_DEVICE_LIMIT distinct device MACs, preventing unlimited reuse/sharing."""
     if ROUTER_API_KEY and not secrets.compare_digest(request.headers.get("X-Router-Key", ""), ROUTER_API_KEY):
         return jsonify({"error": "Unauthorized router client."}), 401
     voucher = str(request.args.get("voucher", "")).strip().upper()
@@ -731,12 +782,12 @@ def validate_access():
     conn = get_db_connection()
     if voucher:
         row = conn.execute(
-            "SELECT plan, status, expires_at, phone, device_mac FROM clients WHERE voucher_code = ? ORDER BY created_at DESC LIMIT 1",
+            "SELECT plan, status, expires_at, phone, speed_tier FROM clients WHERE voucher_code = ? ORDER BY created_at DESC LIMIT 1",
             (voucher,),
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT plan, status, expires_at, phone, device_mac FROM clients WHERE phone = ? AND status = 'paid' ORDER BY created_at DESC LIMIT 1",
+            "SELECT plan, status, expires_at, phone, speed_tier FROM clients WHERE phone = ? AND status = 'paid' ORDER BY created_at DESC LIMIT 1",
             (phone,),
         ).fetchone()
 
@@ -744,20 +795,27 @@ def validate_access():
         conn.close()
         return jsonify({"active": False, "reason": "not_found"})
 
-    bound_mac = row["device_mac"] or ""
-    if device_mac and not bound_mac and voucher:
-        # First redemption on this device: bind the voucher to it.
-        conn.execute("UPDATE clients SET device_mac = ? WHERE voucher_code = ?", (device_mac, voucher))
-        conn.commit()
-        bound_mac = device_mac
+    if device_mac and voucher:
+        device_limit = SPEED_TIER_DEVICE_LIMIT.get(row["speed_tier"], 1)
+        bound_devices = {r["device_mac"] for r in conn.execute(
+            "SELECT device_mac FROM voucher_devices WHERE voucher_code = ?", (voucher,)
+        ).fetchall()}
+        if device_mac not in bound_devices:
+            if len(bound_devices) >= device_limit:
+                conn.close()
+                log_activity("voucher_device_limit_reached", f"voucher={voucher}")
+                return jsonify({"active": False, "reason": "device_limit_reached"})
+            conn.execute(
+                "INSERT INTO voucher_devices (id, voucher_code, device_mac, created_at) VALUES (?, ?, ?, ?)",
+                (secrets.token_hex(8), voucher, device_mac, utc_now().isoformat()),
+            )
+            conn.commit()
     conn.close()
-
-    if device_mac and bound_mac and device_mac != bound_mac:
-        log_activity("voucher_device_mismatch", f"voucher={voucher}")
-        return jsonify({"active": False, "reason": "bound_to_other_device"})
 
     expires_at = row["expires_at"]
     is_active = bool(row["status"] == "paid" and expires_at and datetime.fromisoformat(expires_at) > utc_now())
+    if not is_active and row["status"] == "paid" and expires_at:
+        notify_router_disconnect(device_mac, voucher)
     return jsonify({
         "active": is_active,
         "plan": row["plan"],
@@ -769,7 +827,7 @@ def validate_access():
 @app.get("/api/dashboard")
 @limiter.limit("60 per minute")
 def customer_dashboard():
-    """Public, read-only remaining-time dashboard keyed by voucher code or phone."""
+    """Public, read-only remaining-time dashboard keyed by voucher code or phone, with recent payment history."""
     voucher = str(request.args.get("voucher", "")).strip().upper()
     phone = str(request.args.get("phone", "")).strip()
     if not voucher and not phone:
@@ -778,17 +836,25 @@ def customer_dashboard():
     conn = get_db_connection()
     if voucher:
         row = conn.execute(
-            "SELECT customer_name, plan, amount, status, voucher_code, expires_at FROM clients WHERE voucher_code = ? ORDER BY created_at DESC LIMIT 1",
+            "SELECT customer_name, plan, amount, status, voucher_code, expires_at, speed_tier, auto_renew, phone "
+            "FROM clients WHERE voucher_code = ? ORDER BY created_at DESC LIMIT 1",
             (voucher,),
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT customer_name, plan, amount, status, voucher_code, expires_at FROM clients WHERE phone = ? ORDER BY created_at DESC LIMIT 1",
+            "SELECT customer_name, plan, amount, status, voucher_code, expires_at, speed_tier, auto_renew, phone "
+            "FROM clients WHERE phone = ? ORDER BY created_at DESC LIMIT 1",
             (phone,),
         ).fetchone()
-    conn.close()
     if row is None:
+        conn.close()
         return jsonify({"error": "No account found."}), 404
+
+    history_rows = conn.execute(
+        "SELECT plan, amount, status, date, expires_at FROM clients WHERE phone = ? ORDER BY created_at DESC LIMIT 10",
+        (row["phone"],),
+    ).fetchall()
+    conn.close()
 
     item = dict(row)
     expires_at = item.get("expires_at")
@@ -798,6 +864,7 @@ def customer_dashboard():
         remaining_seconds = max(0, int((datetime.fromisoformat(expires_at) - now).total_seconds()))
     item["remainingSeconds"] = remaining_seconds
     item["isActive"] = item["status"] == "paid" and remaining_seconds > 0
+    item["history"] = [dict(record) for record in history_rows]
     return jsonify(item)
 
 
@@ -812,6 +879,83 @@ def support_info():
 def admin_payment_recipient():
     """Admin-only lookup of the manual payment recipient, used for the walk-in dial flow."""
     return jsonify({"recipient": MANUAL_PAYMENT_RECIPIENT})
+
+
+@app.post("/api/payments/auto-renew-check")
+def auto_renew_check():
+    """Intended to be called by a scheduled job (e.g. Render Cron Job) every few minutes.
+    Finds clients who opted into auto-renew and are expiring soon, and pushes a fresh
+    request-to-pay for the same plan/phone so their access renews without manual action."""
+    if not ROUTER_API_KEY or not secrets.compare_digest(request.headers.get("X-Router-Key", ""), ROUTER_API_KEY):
+        return jsonify({"error": "Unauthorized."}), 401
+
+    soon = (utc_now() + timedelta(minutes=15)).isoformat()
+    conn = get_db_connection()
+    due = conn.execute(
+        "SELECT id, phone, plan, payment_method, device_mac, speed_tier FROM clients "
+        "WHERE auto_renew = 1 AND status = 'paid' AND expires_at IS NOT NULL AND expires_at <= ?",
+        (soon,),
+    ).fetchall()
+    conn.close()
+
+    renewed = []
+    for row in due:
+        provider = row["payment_method"] if row["payment_method"] in {"momo", "airtel"} else "momo"
+        with app.test_request_context(
+            "/api/payments/checkout",
+            method="POST",
+            json={
+                "plan": row["plan"], "phone": row["phone"], "provider": provider,
+                "deviceMac": row["device_mac"], "speedTier": row["speed_tier"], "autoRenew": True,
+            },
+        ):
+            checkout()
+        renewed.append(row["id"])
+    log_activity("auto_renew_check", f"renewed={len(renewed)}")
+    return jsonify({"renewed": renewed, "count": len(renewed)})
+
+
+@app.post("/api/notifications/expiring-soon")
+def expiring_soon_notifications():
+    """Intended to be called by a scheduled job. Returns clients whose voucher expires
+    within the configured warning window, for an SMS/email provider to notify. This app
+    does not send SMS/email itself; wire the returned list to your SMS/email API of choice."""
+    if not ROUTER_API_KEY or not secrets.compare_digest(request.headers.get("X-Router-Key", ""), ROUTER_API_KEY):
+        return jsonify({"error": "Unauthorized."}), 401
+
+    window_minutes = int(request.args.get("windowMinutes", "30"))
+    now = utc_now()
+    soon = (now + timedelta(minutes=window_minutes)).isoformat()
+    conn = get_db_connection()
+    rows = conn.execute(
+        "SELECT id, phone, plan, voucher_code, expires_at FROM clients "
+        "WHERE status = 'paid' AND expires_at IS NOT NULL AND expires_at > ? AND expires_at <= ?",
+        (now.isoformat(), soon),
+    ).fetchall()
+    conn.close()
+    notifications = [dict(row) for row in rows]
+    log_activity("expiring_soon_check", f"count={len(notifications)}")
+    return jsonify({"expiringSoon": notifications, "count": len(notifications)})
+
+
+ROUTER_DISCONNECT_WEBHOOK_URL = os.environ.get("ROUTER_DISCONNECT_WEBHOOK_URL", "")
+
+
+def notify_router_disconnect(device_mac, voucher_code):
+    """Best-effort call to a router/RADIUS adapter to force-disconnect an expired device.
+    Requires ROUTER_DISCONNECT_WEBHOOK_URL to point at your hotspot's own control API."""
+    if not ROUTER_DISCONNECT_WEBHOOK_URL or not device_mac:
+        return
+    try:
+        requests.post(
+            ROUTER_DISCONNECT_WEBHOOK_URL,
+            json={"deviceMac": device_mac, "voucherCode": voucher_code},
+            headers={"X-Router-Key": ROUTER_API_KEY} if ROUTER_API_KEY else {},
+            timeout=5,
+        )
+    except requests.RequestException:
+        logger.warning("Router disconnect webhook failed for voucher %s", voucher_code)
+
 
 
 @app.post("/api/payments/manual-instructions")
@@ -1012,6 +1156,23 @@ def summary():
         "SELECT COUNT(*) AS total FROM clients WHERE date = ? AND status = 'paid'",
         (today,),
     ).fetchone()["total"]
+    now_active = conn.execute(
+        "SELECT COUNT(*) AS total FROM clients WHERE status = 'paid' AND expires_at > ?", (utc_now().isoformat(),)
+    ).fetchone()["total"]
+    speed_tier_breakdown = {
+        row["speed_tier"] or "basic": row["total"]
+        for row in conn.execute(
+            "SELECT speed_tier, COUNT(*) AS total FROM clients WHERE status = 'paid' GROUP BY speed_tier"
+        ).fetchall()
+    }
+    fraud_window_start = (utc_now() - timedelta(hours=24)).isoformat()
+    fraud_attempts_24h = conn.execute(
+        "SELECT COUNT(*) AS total FROM payment_failures WHERE created_at > ?", (fraud_window_start,)
+    ).fetchone()["total"]
+    peak_hour_row = conn.execute(
+        "SELECT strftime('%H', created_at) AS hour, COUNT(*) AS total FROM clients "
+        "WHERE status = 'paid' GROUP BY hour ORDER BY total DESC LIMIT 1"
+    ).fetchone()
     conn.close()
     return jsonify(
         {
@@ -1019,6 +1180,11 @@ def summary():
             "activeClients": active_clients,
             "pendingPayments": pending,
             "paidToday": paid_today,
+            "currentlyActiveSessions": now_active,
+            "speedTierBreakdown": speed_tier_breakdown,
+            "fraudAttemptsLast24h": fraud_attempts_24h,
+            "fraudAlert": fraud_attempts_24h >= MAX_FAILED_PAYMENT_ATTEMPTS,
+            "peakUsageHourUTC": peak_hour_row["hour"] if peak_hour_row else None,
         }
     )
 

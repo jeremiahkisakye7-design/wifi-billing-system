@@ -1,6 +1,7 @@
 billing.db
 __pycache__/
 *.pyc
+*.log
 .env
 .validation-data/
 .auth-validation/

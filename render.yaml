@@ -46,5 +46,7 @@ services:
         sync: false
       - key: ROUTER_API_KEY
         sync: false
+      - key: ROUTER_DISCONNECT_WEBHOOK_URL
+        sync: false
       - key: RATE_LIMIT_STORAGE_URL
         sync: false

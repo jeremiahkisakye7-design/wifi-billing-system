@@ -54,6 +54,10 @@ button, input, select { font: inherit; }
 .dashboard-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.9rem; }
 .dashboard-row strong { color: var(--accent); }
 #dashboardTime { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+.dashboard-history { list-style: none; margin: 12px 0 0; padding: 8px 0 0; border-top: 1px solid var(--line); font-size: 0.8rem; color: var(--muted); }
+.dashboard-history li { padding: 3px 0; }
+.public-checkbox { display: flex; align-items: center; gap: 8px; }
+.public-checkbox input { width: auto; }
 .voucher-box { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); text-align: left; }
 .voucher-box .public-field { margin-bottom: 10px; }
 .voucher-box { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); text-align: left; }

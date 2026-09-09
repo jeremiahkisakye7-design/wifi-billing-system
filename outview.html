@@ -68,8 +68,16 @@
           <button type="button" class="public-plan" data-public-plan="shortSession"><strong>6 Hours</strong><span>UGX 500</span></button>
           <button type="button" class="public-plan selected" data-public-plan="fullDay"><strong>1 Day</strong><span>UGX 1,000</span></button>
           <button type="button" class="public-plan" data-public-plan="weekly"><strong>1 Week</strong><span>UGX 4,000</span></button>
-          <button type="button" class="public-plan" data-public-plan="monthly"><strong>1 Month</strong><span>UGX 25,000</span></button>
+          <button type="button" class="public-plan" data-public-plan="monthly"><strong>1 Month + bonus week</strong><span>UGX 25,000</span></button>
         </div>
+        <div class="public-plans" role="group" aria-label="Speed tier">
+          <button type="button" class="public-plan selected" data-speed-tier="basic"><strong>Basic speed</strong><span>1 device</span></button>
+          <button type="button" class="public-plan" data-speed-tier="premium"><strong>Premium speed</strong><span>3 devices, 1.6x price</span></button>
+        </div>
+        <label class="public-field public-checkbox">
+          <input id="publicAutoRenew" type="checkbox" />
+          <span>Auto-renew this plan when it expires</span>
+        </label>
         <div class="public-total" aria-live="polite">
           <span>WiFi price</span><strong id="publicPlanTotal">UGX 1,000</strong>
           <span>Service charge (5%)</span><strong id="publicServiceCharge">UGX 50</strong>
@@ -86,6 +94,7 @@
           <div class="dashboard-row"><span>Time remaining</span><strong id="dashboardTime">00:00:00</strong></div>
           <p id="dashboardStatus" class="public-status">Active</p>
           <button type="button" id="dashboardRenewBtn" class="public-secondary-btn">Renew / buy more time</button>
+          <ul id="dashboardHistoryList" class="dashboard-history"></ul>
         </div>
         <div class="voucher-box">
           <label class="public-field">
