@@ -503,7 +503,7 @@ function openMobileMoneyPortal(provider) {
 
   paymentMethodInput.value = provider === 'momo' ? 'Mobile Money' : 'Mobile Money';
   const total = Math.max(0, Math.round(calculateBill().total));
-  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${MOBILE_MONEY_NUMBER}*${total}*1#`;
+  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${MOBILE_MONEY_NUMBER}*${total}#`;
   window.location.href = `tel:${encodeURIComponent(ussdCode)}`;
 }
 
@@ -532,7 +532,8 @@ function openPublicMobileMoney(provider) {
     window.setTimeout(() => window.clearTimeout(fallbackTimer), 1000);
     return;
   }
-  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${settings.recipient}*${total}*1#`;
+  const recipient = settings.recipient.replace(/\D/g, '');
+  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${recipient}*${total}#`;
   publicPaymentStatus.textContent = `Opening ${provider === 'momo' ? 'MTN' : 'Airtel'} Money. Check the total, then enter your PIN.`;
   window.location.href = `tel:${encodeURIComponent(ussdCode)}`;
 }
@@ -705,15 +706,7 @@ loginForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const username = document.getElementById('adminUsername').value.trim();
   const password = document.getElementById('adminPassword').value.trim();
-  if (username === 'admin' && password === 'admin123') {
-    loginOverlay.classList.add('hidden');
-    publicPortal.classList.add('hidden');
-    adminApp.classList.remove('hidden');
-    logoutBtn.classList.remove('hidden');
-    isAdminAuthenticated = false; // Reset on each login
-  } else {
-    alert('Incorrect admin login details. Use admin / admin123.');
-  }
+  alert('Admin access is available only from the secure hosted website.');
 });
 
 logoutBtn.addEventListener('click', () => {

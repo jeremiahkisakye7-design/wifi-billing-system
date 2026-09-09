@@ -5,5 +5,12 @@
   "display": "standalone",
   "background_color": "#07111a",
   "theme_color": "#0ea5e9",
-  "icons": []
+  "icons": [
+    {
+      "src": "/wifi-billing-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }

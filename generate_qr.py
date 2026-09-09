@@ -3,7 +3,7 @@ import sys
 
 # Generate QR code for the WiFi billing system
 if len(sys.argv) != 2 or not sys.argv[1].startswith(('http://', 'https://')):
-    raise SystemExit('Usage: python generate_qr.py https://your-site-name.netlify.app')
+    raise SystemExit('Usage: python generate_qr.py https://wifi-billing-system-e14d.onrender.com/')
 
 portal_url = sys.argv[1].rstrip('/')
 qr = qrcode.QRCode(

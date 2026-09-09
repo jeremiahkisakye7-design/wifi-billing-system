@@ -12,11 +12,29 @@ Deploy the Flask app as one web service. This serves the customer portal, admin 
 4. Render will use `render.yaml` to install the dependencies and start the app.
 5. Open the generated HTTPS URL. Log in through **Admin** to check billing activity from any device.
 
-The Render blueprint attaches a persistent disk at `/opt/render/project/src/data`, and the app stores its database there automatically. Keep the disk attached so redeployments do not erase billing records.
+The free Render setup stores the SQLite database in the service filesystem. Records are shared while the service is running, but may reset after a redeploy or restart. Use persistent storage or PostgreSQL later when you need durable production records.
 
 The app also supports installation from Chrome or Edge using the **Install app** button in the admin dashboard.
 
 Router management is stored in the same shared database and is available online after admin login. It currently manages the router registry and connection details; live reboot, bandwidth, and connected-device control require credentials and an API supported by the specific router model.
+
+## Automatic mobile-money setup
+
+The application cannot generate a real merchant code. MTN or Airtel must issue the merchant code, collection primary key, API user, API key, client ID, and client secret after approving a merchant/collection account. Personal wallet numbers are not sufficient for automatic confirmation.
+
+Render environment variables are listed in `.env.example` and are declared as private values in `render.yaml`. Enter the provider-issued values in Render; never commit them to GitHub or place them in frontend JavaScript.
+
+The required callback base URL is:
+
+`https://wifi-billing-system-e14d.onrender.com`
+
+The exact payment webhook URL is:
+
+`https://wifi-billing-system-e14d.onrender.com/api/payments/webhook`
+
+Provider onboarding must register the payment callback URL with the provider before automatic payment confirmation can be enabled. Until those credentials and callback registration exist, the app intentionally uses the secure USSD/app handoff and does not mark a payment paid automatically.
+
+When a valid signed callback is received, the app verifies the amount and provider reference, marks the matching bill as paid, creates a server-side Wi-Fi voucher, and exposes its status through the payment intent endpoint. The customer page polls that intent and displays the voucher after confirmation.
 
 ## Optional: static Netlify frontend
 

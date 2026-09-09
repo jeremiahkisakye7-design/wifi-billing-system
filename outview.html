@@ -60,6 +60,10 @@
             <option value="airtel">Airtel Money</option>
           </select>
         </label>
+        <label class="public-field">
+          <span>Your phone number</span>
+          <input id="publicPhone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07XXXXXXXX" required />
+        </label>
         <div class="public-plans" role="group" aria-label="WiFi packages">
           <button type="button" class="public-plan selected" data-public-plan="fullDay"><strong>1 Day</strong><span>UGX 1,000</span></button>
           <button type="button" class="public-plan" data-public-plan="weekly"><strong>1 Week</strong><span>UGX 4,000</span></button>
@@ -83,6 +87,7 @@
           <p id="voucherStatus" class="public-status" aria-live="polite"></p>
         </div>
         <button type="button" id="adminAccessBtn" class="admin-access-btn">Admin</button>
+        <button type="button" id="publicInstallAppBtn" class="admin-access-btn hidden">Install app</button>
       </div>
     </section>
 
@@ -93,11 +98,11 @@
         <form id="loginForm">
           <label>
             <span>Username</span>
-            <input id="adminUsername" type="text" value="admin" required />
+            <input id="adminUsername" type="text" autocomplete="username" required />
           </label>
           <label>
             <span>Password</span>
-            <input id="adminPassword" type="password" value="admin123" required />
+            <input id="adminPassword" type="password" autocomplete="current-password" required />
           </label>
           <button type="submit" class="primary-btn login-btn">Access dashboard</button>
         </form>
@@ -255,6 +260,12 @@
                   <label><input type="checkbox" value="speed" class="addon" /> Speed upgrade</label>
                   <label><input type="checkbox" value="support" class="addon" /> Premium support</label>
                 </div>
+                <label>
+                  <span>Router option</span>
+                  <select id="routerOption">
+                    <option value="">No router selected</option>
+                  </select>
+                </label>
               </div>
 
               <div class="receipt-panel" aria-live="polite">
@@ -456,7 +467,7 @@
       </section>
     </div>
 
-    <script src="script.js"></script>
+    <script src="script.js?v=3"></script>
     <script>
       // Generate QR code on page load
       window.addEventListener('load', () => {

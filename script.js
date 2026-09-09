@@ -41,6 +41,7 @@ const MOBILE_MONEY_APP = {
 };
 const PAYMENT_SETTINGS_KEY = 'wifiBillingPaymentSettings';
 const VOUCHERS_KEY = 'wifiBillingVouchers';
+const PAYMENT_INTENT_KEY = 'wifiBillingPaymentIntent';
 const DEFAULT_PAYMENT_SETTINGS = { recipient: '0741808601', method: 'ussd' };
 let publicPlan = 'fullDay';
 let deferredInstallPrompt;
@@ -53,6 +54,7 @@ const loginForm = document.getElementById('loginForm');
 const adminAccessBtn = document.getElementById('adminAccessBtn');
 const cancelAdminBtn = document.getElementById('cancelAdminBtn');
 const publicProviderInput = document.getElementById('publicProvider');
+const publicPhoneInput = document.getElementById('publicPhone');
 const publicPaymentStatus = document.getElementById('publicPaymentStatus');
 const publicPlanTotalEl = document.getElementById('publicPlanTotal');
 const publicServiceChargeEl = document.getElementById('publicServiceCharge');
@@ -84,6 +86,7 @@ const protectedAccessForm = document.getElementById('protectedAccessForm');
 const protectedInfoModal = document.getElementById('protectedInfoModal');
 const protectedPasswordInput = document.getElementById('protectedPassword');
 const installAppBtn = document.getElementById('installAppBtn');
+const publicInstallAppBtn = document.getElementById('publicInstallAppBtn');
 
 const customerNameInput = document.getElementById('customerName');
 const customerPhoneInput = document.getElementById('customerPhone');
@@ -92,6 +95,7 @@ const paymentMethodInput = document.getElementById('paymentMethod');
 const deviceCountInput = document.getElementById('deviceCount');
 const startDateInput = document.getElementById('startDate');
 const discountInput = document.getElementById('discount');
+const routerOptionInput = document.getElementById('routerOption');
 
 const baseCostEl = document.getElementById('baseCost');
 const deviceCostEl = document.getElementById('deviceCost');
@@ -256,22 +260,41 @@ async function fetchRecords() {
   }
 }
 
-async function saveRecord() {
+async function restoreAdminSession() {
+  if (IS_STATIC_DEPLOYMENT) return;
+  try {
+    const response = await fetch(`${API_BASE}/auth/session`);
+    if (!response.ok || !(await response.json()).authenticated) return;
+    publicPortal.classList.add('hidden');
+    loginOverlay.classList.add('hidden');
+    adminApp.classList.remove('hidden');
+    logoutBtn.classList.remove('hidden');
+    await fetchRecords();
+    await fetchRouters();
+  } catch (error) {
+    console.warn('Could not restore admin session', error);
+  }
+}
+
+async function saveRecord(record) {
   try {
     const payload = {
-      customerName: customerNameInput.value.trim(),
-      phone: customerPhoneInput.value.trim(),
-      plan: planTypeInput.value,
-      paymentMethod: paymentMethodInput.value,
-      deviceCount: Number(deviceCountInput.value) || 1,
-      date: safeDateValue(),
-      amount: Math.max(0, Math.round(calculateBill().total)),
-      discount: Number(discountInput.value) || 0,
-      status: 'pending',
-      addons: getSelectedAddons(),
+      id: record.id,
+      customerName: record.customerName,
+      phone: record.phone,
+      plan: record.plan,
+      paymentMethod: record.paymentMethod,
+      deviceCount: record.deviceCount,
+      date: record.date,
+      amount: record.amount,
+      discount: record.discount,
+      status: record.status,
+      addons: record.addons,
+      routerId: record.routerId || '',
     };
 
     if (IS_STATIC_DEPLOYMENT) {
+      records.push(record);
       localStorage.setItem('wifiBillingRecords', JSON.stringify(records));
       renderAll();
       return true;
@@ -284,6 +307,11 @@ async function saveRecord() {
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        logoutBtn.click();
+        alert('Your admin session expired. Please log in again.');
+        return false;
+      }
       const errorText = await response.text();
       throw new Error(errorText || 'Save failed');
     }
@@ -395,6 +423,13 @@ function renderRouters() {
       </div>
     </div>
   `).join('');
+  if (routerOptionInput) {
+    const selectedRouter = routerOptionInput.value;
+    routerOptionInput.innerHTML = '<option value="">No router selected</option>' + routers
+      .map((router) => `<option value="${router.id}">${router.name} (${router.ip})</option>`)
+      .join('');
+    routerOptionInput.value = routers.some((router) => router.id === selectedRouter) ? selectedRouter : '';
+  }
 }
 
 async function fetchRouters() {
@@ -541,14 +576,37 @@ function openMobileMoneyPortal(provider) {
 
   paymentMethodInput.value = provider === 'momo' ? 'Mobile Money' : 'Mobile Money';
   const total = Math.max(0, Math.round(calculateBill().total));
-  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${MOBILE_MONEY_NUMBER}*${total}*1#`;
+  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${MOBILE_MONEY_NUMBER}*${total}#`;
   window.location.href = `tel:${encodeURIComponent(ussdCode)}`;
 }
 
-function openPublicMobileMoney(provider) {
+async function openPublicMobileMoney(provider) {
+  const phone = publicPhoneInput?.value.trim();
+  if (!phone) {
+    publicPaymentStatus.textContent = 'Enter your phone number before paying.';
+    publicPhoneInput?.focus();
+    return;
+  }
   const planPrice = PLAN_PRICES[publicPlan];
   const serviceCharge = Math.ceil(planPrice * SERVICE_CHARGE_RATE);
   const total = planPrice + serviceCharge;
+  if (!IS_STATIC_DEPLOYMENT) {
+    try {
+      const intentResponse = await fetch(`${API_BASE}/payments/intents`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: publicPlan, phone, provider }),
+      });
+      if (!intentResponse.ok) throw new Error('Could not create payment intent');
+      const intent = await intentResponse.json();
+      localStorage.setItem(PAYMENT_INTENT_KEY, intent.paymentIntentId);
+      publicPaymentStatus.textContent = `Payment request ${intent.paymentIntentId} created for ${formatCurrency(intent.amount)}.`;
+    } catch (error) {
+      console.error(error);
+      publicPaymentStatus.textContent = 'Could not start payment. Please try again.';
+      return;
+    }
+  }
   const settings = getPaymentSettings();
   if (settings.method === 'call') {
     window.location.href = `tel:+256${settings.recipient.slice(1)}`;
@@ -570,9 +628,29 @@ function openPublicMobileMoney(provider) {
     window.setTimeout(() => window.clearTimeout(fallbackTimer), 1000);
     return;
   }
-  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${settings.recipient}*${total}*1#`;
+  const recipient = settings.recipient.replace(/\D/g, '');
+  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${recipient}*${total}#`;
   publicPaymentStatus.textContent = `Opening ${provider === 'momo' ? 'MTN' : 'Airtel'} Money. Check the total, then enter your PIN.`;
   window.location.href = `tel:${encodeURIComponent(ussdCode)}`;
+}
+
+async function checkPaymentIntent() {
+  const intentId = localStorage.getItem(PAYMENT_INTENT_KEY);
+  if (!intentId || IS_STATIC_DEPLOYMENT) return;
+  try {
+    const response = await fetch(`${API_BASE}/payments/intents/${encodeURIComponent(intentId)}`);
+    if (!response.ok) return;
+    const payment = await response.json();
+    if (payment.status === 'paid' && payment.voucher_code) {
+      voucherStatus.textContent = `Payment confirmed. Your WiFi voucher is ${payment.voucher_code}.`;
+      voucherInput.value = payment.voucher_code;
+      localStorage.removeItem(PAYMENT_INTENT_KEY);
+    } else {
+      publicPaymentStatus.textContent = `Waiting for payment confirmation for ${intentId}.`;
+    }
+  } catch (error) {
+    console.warn('Payment status unavailable', error);
+  }
 }
 
 function getPaymentSettings() {
@@ -664,10 +742,10 @@ async function handleFormSubmit(event) {
     discount: bill.discount,
     status: 'pending',
     addons: bill.selectedAddons,
+    routerId: routerOptionInput?.value || '',
   };
 
-  records.push(record);
-  const saved = await saveRecord();
+  const saved = await saveRecord(record);
   if (!saved) return;
   form.reset();
   resetForm();
@@ -744,15 +822,7 @@ loginForm.addEventListener('submit', async (event) => {
   const username = document.getElementById('adminUsername').value.trim();
   const password = document.getElementById('adminPassword').value.trim();
   if (IS_STATIC_DEPLOYMENT) {
-    if (username !== 'admin' || password !== 'admin123') {
-      alert('Incorrect admin login details. Use admin / admin123.');
-      return;
-    }
-    loginOverlay.classList.add('hidden');
-    publicPortal.classList.add('hidden');
-    adminApp.classList.remove('hidden');
-    logoutBtn.classList.remove('hidden');
-    isAdminAuthenticated = false; // Reset on each login
+    alert('Admin access is available only from the secure hosted website.');
     return;
   }
 
@@ -895,7 +965,14 @@ document.querySelectorAll('.addon').forEach((checkbox) => {
 startDateInput.value = new Date().toISOString().slice(0, 10);
 loadPaymentSettings();
 updatePublicAmount();
-fetchRecords();
+if (IS_STATIC_DEPLOYMENT) {
+  fetchRecords();
+} else {
+  calculateBill();
+  restoreAdminSession();
+  checkPaymentIntent();
+  window.setInterval(checkPaymentIntent, 5000);
+}
 window.setInterval(() => {
   expireRecords();
   renderTable();
@@ -909,12 +986,17 @@ window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault();
   deferredInstallPrompt = event;
   installAppBtn?.classList.remove('hidden');
+  publicInstallAppBtn?.classList.remove('hidden');
 });
 
-installAppBtn?.addEventListener('click', async () => {
+async function installApp() {
   if (!deferredInstallPrompt) return;
   deferredInstallPrompt.prompt();
   await deferredInstallPrompt.userChoice;
   deferredInstallPrompt = null;
   installAppBtn.classList.add('hidden');
-});
+  publicInstallAppBtn?.classList.add('hidden');
+}
+
+installAppBtn?.addEventListener('click', installApp);
+publicInstallAppBtn?.addEventListener('click', installApp);

@@ -2,6 +2,7 @@ services:
   - type: web
     name: wifi-billing-system
     runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
     envVars:
@@ -13,7 +14,25 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
-    disk:
-      name: wifi-billing-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
+      - key: PAYMENT_PROVIDER
+        sync: false
+      - key: MTN_MERCHANT_CODE
+        sync: false
+      - key: MTN_COLLECTION_PRIMARY_KEY
+        sync: false
+      - key: MTN_API_USER
+        sync: false
+      - key: MTN_API_KEY
+        sync: false
+      - key: MTN_TARGET_ENVIRONMENT
+        sync: false
+      - key: AIRTEL_MERCHANT_CODE
+        sync: false
+      - key: AIRTEL_CLIENT_ID
+        sync: false
+      - key: AIRTEL_CLIENT_SECRET
+        sync: false
+      - key: PAYMENT_CALLBACK_BASE_URL
+        sync: false
+      - key: PAYMENT_WEBHOOK_SECRET
+        sync: false
