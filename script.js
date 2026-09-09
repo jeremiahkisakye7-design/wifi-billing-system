@@ -2,17 +2,21 @@ const API_BASE = '/api';
 const IS_STATIC_DEPLOYMENT = window.location.protocol === 'file:' || window.location.hostname.endsWith('netlify.app');
 
 const PLAN_PRICES = {
+  hourly: 200,
   shortSession: 500,
   fullDay: 1000,
   weekly: 4000,
   monthly: 25000,
+  quarterly: 70000,
 };
 
 const PLAN_DURATIONS_MS = {
+  hourly: 60 * 60 * 1000,
   shortSession: 6 * 60 * 60 * 1000,
   fullDay: 24 * 60 * 60 * 1000,
   weekly: 7 * 24 * 60 * 60 * 1000,
   monthly: 30 * 24 * 60 * 60 * 1000,
+  quarterly: 90 * 24 * 60 * 60 * 1000,
 };
 
 const ADDON_PRICES = {
@@ -69,6 +73,7 @@ const redeemVoucherBtn = document.getElementById('redeemVoucherBtn');
 const voucherStatus = document.getElementById('voucherStatus');
 const dashboardPanel = document.getElementById('customerDashboard');
 const dashboardVoucherEl = document.getElementById('dashboardVoucher');
+const dashboardReferralCodeEl = document.getElementById('dashboardReferralCode');
 const dashboardPlanEl = document.getElementById('dashboardPlan');
 const dashboardTimeEl = document.getElementById('dashboardTime');
 const dashboardStatusEl = document.getElementById('dashboardStatus');
@@ -662,10 +667,16 @@ async function openPublicMobileMoney(provider) {
         deviceMac: DEVICE_MAC,
         speedTier: publicSpeedTier,
         autoRenew: document.getElementById('publicAutoRenew')?.checked || false,
+        referredBy: document.getElementById('publicReferralCode')?.value.trim() || '',
       }),
     });
     const intent = await response.json();
     if (!response.ok) throw new Error(intent.error || 'Could not start payment');
+    if (intent.mode === 'free_reward') {
+      activateDashboard(intent.voucherCode, phone, null);
+      publicPaymentStatus.textContent = intent.message;
+      return;
+    }
     localStorage.setItem(PAYMENT_INTENT_KEY, intent.paymentIntentId);
     publicPaymentStatus.textContent = intent.message || `Payment request created for ${formatCurrency(intent.amount)}.`;
 
@@ -783,6 +794,7 @@ function renderDashboard(data) {
   clearInterval(dashboardCountdownTimer);
   dashboardPanel.classList.remove('hidden');
   dashboardVoucherEl.textContent = data.voucherCode || '—';
+  dashboardReferralCodeEl.textContent = data.referralCode || '—';
   dashboardPlanEl.textContent = formatPlanName(data.plan || publicPlan);
   renderDashboardHistory(data.history || []);
   const expiresAtMs = data.expiresAt ? new Date(data.expiresAt).getTime() : 0;
@@ -815,7 +827,7 @@ async function loadStoredDashboard() {
     if (!response.ok) return;
     const data = await response.json();
     if (data.isActive) {
-      renderDashboard({ voucherCode: data.voucher_code, plan: data.plan, expiresAt: data.expires_at, history: data.history });
+      renderDashboard({ voucherCode: data.voucher_code, plan: data.plan, expiresAt: data.expires_at, history: data.history, referralCode: data.referral_code });
     } else {
       localStorage.removeItem(DASHBOARD_KEY);
     }

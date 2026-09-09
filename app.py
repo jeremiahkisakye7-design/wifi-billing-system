@@ -55,18 +55,30 @@ else:
             return decorator
 
     limiter = _NoopLimiter()
-ALLOWED_PLANS = {"shortSession", "fullDay", "weekly", "monthly"}
+ALLOWED_PLANS = {"hourly", "shortSession", "fullDay", "weekly", "monthly", "quarterly"}
 ALLOWED_STATUSES = {"pending", "paid", "expired"}
-PLAN_PRICES = {"shortSession": 500, "fullDay": 1000, "weekly": 4000, "monthly": 25000}
-PLAN_DURATIONS_DAYS = {"shortSession": 0.25, "fullDay": 1, "weekly": 7, "monthly": 30}
-# Bundle deal: a monthly plan includes a bonus week at no extra cost.
-BUNDLE_BONUS_DAYS = {"monthly": 7}
-# Monetization: speed tiers change price and how many devices a single voucher can authorize.
+PLAN_PRICES = {
+    "hourly": 200, "shortSession": 500, "fullDay": 1000, "weekly": 4000,
+    "monthly": 25000, "quarterly": 70000,
+}
+PLAN_DURATIONS_DAYS = {
+    "hourly": 1 / 24, "shortSession": 0.25, "fullDay": 1, "weekly": 7,
+    "monthly": 30, "quarterly": 90,
+}
+# Bundle deal: a monthly/quarterly plan includes a bonus week at no extra cost.
+BUNDLE_BONUS_DAYS = {"monthly": 7, "quarterly": 7}
+# Monetization: speed tiers change price, throughput, and how many devices a voucher can authorize.
 SPEED_TIER_MULTIPLIER = {"basic": 1.0, "premium": 1.6}
 SPEED_TIER_DEVICE_LIMIT = {"basic": 1, "premium": 3}
+SPEED_TIER_MBPS = {"basic": 2, "premium": 10}
 # Loyalty reward: every Nth paid purchase from the same phone gets a percentage discount.
 LOYALTY_PURCHASES_INTERVAL = 5
 LOYALTY_DISCOUNT_PERCENT = 10
+# "Buy 5 daily vouchers, get 1 free": every 6th fullDay purchase from the same phone is free.
+DAILY_LOYALTY_PLAN = "fullDay"
+DAILY_LOYALTY_BUY_COUNT = 5
+# Referral reward: a successful referred purchase grants the referrer a free hourly voucher.
+REFERRAL_REWARD_PLAN = "hourly"
 
 PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "manual").lower()
 
@@ -149,21 +161,70 @@ def record_payment_failure(phone):
     conn.close()
 
 
-def log_activity(event_type, detail="", request_obj=None):
+def get_pricing_config():
+    """Admin-adjustable pricing/tiers, merged over the built-in defaults."""
+    defaults = {
+        "planPrices": PLAN_PRICES,
+        "planDurationsDays": PLAN_DURATIONS_DAYS,
+        "bundleBonusDays": BUNDLE_BONUS_DAYS,
+        "speedTierMultiplier": SPEED_TIER_MULTIPLIER,
+        "speedTierDeviceLimit": SPEED_TIER_DEVICE_LIMIT,
+        "loyaltyPurchasesInterval": LOYALTY_PURCHASES_INTERVAL,
+        "loyaltyDiscountPercent": LOYALTY_DISCOUNT_PERCENT,
+        "dailyLoyaltyBuyCount": DAILY_LOYALTY_BUY_COUNT,
+    }
+    conn = get_db_connection()
+    row = conn.execute("SELECT value FROM settings WHERE key = 'pricing_config'").fetchone()
+    conn.close()
+    if not row:
+        return defaults
     try:
-        conn = get_db_connection()
+        overrides = json.loads(row["value"])
+    except (TypeError, ValueError):
+        return defaults
+    for key, value in overrides.items():
+        if key in defaults and isinstance(defaults[key], dict) and isinstance(value, dict):
+            defaults[key] = {**defaults[key], **value}
+        elif key in defaults:
+            defaults[key] = value
+    return defaults
+
+
+def save_pricing_overrides(overrides):
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('pricing_config', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (json.dumps(overrides),),
+    )
+    conn.commit()
+    conn.close()
+
+
+def log_activity(event_type, detail="", request_obj=None, conn=None):
+    """Record an activity entry. Pass an existing open `conn` to reuse it (avoids a
+    second connection deadlocking against an uncommitted write on the same database)."""
+    ip_address = ""
+    try:
+        req = request_obj or request
+        ip_address = req.headers.get("X-Forwarded-For", req.remote_addr or "")[:64]
+    except Exception:
+        pass
+    entry = (secrets.token_hex(8), event_type, detail, ip_address, utc_now().isoformat())
+    if conn is not None:
         conn.execute(
             "INSERT INTO activity_log (id, event_type, detail, ip_address, created_at) VALUES (?, ?, ?, ?, ?)",
-            (
-                secrets.token_hex(8),
-                event_type,
-                detail,
-                (request_obj or request).headers.get("X-Forwarded-For", (request_obj or request).remote_addr or "")[:64] if request_obj or request else "",
-                utc_now().isoformat(),
-            ),
+            entry,
         )
-        conn.commit()
-        conn.close()
+        return
+    try:
+        own_conn = get_db_connection()
+        own_conn.execute(
+            "INSERT INTO activity_log (id, event_type, detail, ip_address, created_at) VALUES (?, ?, ?, ?, ?)",
+            entry,
+        )
+        own_conn.commit()
+        own_conn.close()
     except Exception:
         logger.exception("Failed to write activity log for %s", event_type)
 
@@ -219,9 +280,14 @@ def init_db():
         conn.execute("ALTER TABLE clients ADD COLUMN speed_tier TEXT DEFAULT 'basic'")
     if "auto_renew" not in client_columns:
         conn.execute("ALTER TABLE clients ADD COLUMN auto_renew INTEGER DEFAULT 0")
+    if "referral_code" not in client_columns:
+        conn.execute("ALTER TABLE clients ADD COLUMN referral_code TEXT DEFAULT ''")
+    if "referred_by" not in client_columns:
+        conn.execute("ALTER TABLE clients ADD COLUMN referred_by TEXT DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_date ON clients(date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_device_mac ON clients(device_mac)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_referral_code ON clients(referral_code)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS voucher_devices (
@@ -277,6 +343,14 @@ def init_db():
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_payment_failures_phone_hash ON payment_failures(phone_hash)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS routers (
@@ -500,24 +574,60 @@ def airtel_get_status(reference_id):
     return response.json().get("data", {}).get("transaction", {}).get("status", "").upper()
 
 
+def grant_free_voucher(conn, phone, plan, reason):
+    """Directly activate a free voucher (loyalty/referral reward) without a payment intent."""
+    now = utc_now()
+    config = get_pricing_config()
+    client_id = f"reward-{now.strftime('%Y%m%d%H%M%S%f')}"
+    voucher_code = f"WIFI-{secrets.token_hex(4).upper()}"
+    total_days = config["planDurationsDays"].get(plan, 1) + config["bundleBonusDays"].get(plan, 0)
+    expires_at = (now + timedelta(days=total_days)).isoformat()
+    conn.execute(
+        """
+        INSERT INTO clients (id, customer_name, phone, plan, payment_method, device_count,
+            date, amount, discount, status, addons, router_id, device_mac, speed_tier, auto_renew,
+            voucher_code, expires_at, referral_code, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (client_id, "Reward customer", phone, plan, reason, 1, now.strftime("%Y-%m-%d"),
+         0, 0, "paid", "[]", "", "", "basic", 0, voucher_code, expires_at, secrets.token_hex(3).upper(),
+         now.isoformat()),
+    )
+    log_activity(reason, f"phone={mask_phone(phone)} voucher={voucher_code}", conn=conn)
+    return voucher_code
+
+
 def mark_intent_paid(conn, intent, reference):
     """Confirm a payment intent, activate the client's WiFi voucher, and log the event. Caller must commit/close conn."""
     if intent["status"] == "paid":
         return {"success": True, "duplicate": True}
     confirmed_at = utc_now().isoformat()
-    client = conn.execute("SELECT plan FROM clients WHERE id = ?", (intent["client_id"],)).fetchone()
+    client = conn.execute(
+        "SELECT plan, phone, referred_by FROM clients WHERE id = ?", (intent["client_id"],)
+    ).fetchone()
+    config = get_pricing_config()
     voucher_code = f"WIFI-{secrets.token_hex(4).upper()}"
-    total_days = PLAN_DURATIONS_DAYS.get(client["plan"], 30) + BUNDLE_BONUS_DAYS.get(client["plan"], 0)
+    referral_code = secrets.token_hex(3).upper()
+    total_days = config["planDurationsDays"].get(client["plan"], 30) + config["bundleBonusDays"].get(client["plan"], 0)
     expires_at = (utc_now() + timedelta(days=total_days)).isoformat()
     conn.execute(
         "UPDATE payment_intents SET status = 'paid', provider_reference = ?, confirmed_at = ? WHERE id = ?",
         (reference, confirmed_at, intent["id"]),
     )
     conn.execute(
-        "UPDATE clients SET status = 'paid', voucher_code = ?, expires_at = ? WHERE id = ?",
-        (voucher_code, expires_at, intent["client_id"]),
+        "UPDATE clients SET status = 'paid', voucher_code = ?, expires_at = ?, referral_code = ? WHERE id = ?",
+        (voucher_code, expires_at, referral_code, intent["client_id"]),
     )
-    log_activity("payment_confirmed", f"intent={intent['id']} voucher={voucher_code}")
+    log_activity("payment_confirmed", f"intent={intent['id']} voucher={voucher_code}", conn=conn)
+
+    if client["referred_by"]:
+        referrer = conn.execute(
+            "SELECT phone FROM clients WHERE referral_code = ? AND phone != ? LIMIT 1",
+            (client["referred_by"], client["phone"]),
+        ).fetchone()
+        if referrer:
+            grant_free_voucher(conn, referrer["phone"], REFERRAL_REWARD_PLAN, "referral_reward_granted")
+
     return {"success": True, "clientId": intent["client_id"], "voucherCode": voucher_code, "expiresAt": expires_at}
 
 
@@ -573,9 +683,11 @@ def checkout():
     device_mac = str(payload.get("deviceMac", "")).strip()[:64]
     speed_tier = str(payload.get("speedTier", "basic")).lower()
     auto_renew = 1 if payload.get("autoRenew") else 0
-    if plan not in PLAN_PRICES or not phone or provider not in {"momo", "airtel"}:
+    referred_by = str(payload.get("referredBy", "")).strip().upper()[:16]
+    config = get_pricing_config()
+    if plan not in config["planPrices"] or not phone or provider not in {"momo", "airtel"}:
         return jsonify({"error": "Plan, phone, and payment provider are required."}), 400
-    if speed_tier not in SPEED_TIER_MULTIPLIER:
+    if speed_tier not in config["speedTierMultiplier"]:
         speed_tier = "basic"
     digits_only = phone.lstrip("+")
     if not digits_only.isdigit() or len(digits_only) < 9 or len(digits_only) > 15:
@@ -588,27 +700,45 @@ def checkout():
     prior_paid_count = conn.execute(
         "SELECT COUNT(*) AS total FROM clients WHERE phone = ? AND status = 'paid'", (phone,)
     ).fetchone()["total"]
-    conn.close()
-    loyalty_discount_applied = prior_paid_count > 0 and (prior_paid_count + 1) % LOYALTY_PURCHASES_INTERVAL == 0
 
-    base_price = round(PLAN_PRICES[plan] * SPEED_TIER_MULTIPLIER[speed_tier])
+    if plan == DAILY_LOYALTY_PLAN:
+        prior_daily_count = conn.execute(
+            "SELECT COUNT(*) AS total FROM clients WHERE phone = ? AND plan = ? AND status = 'paid' AND amount > 0",
+            (phone, DAILY_LOYALTY_PLAN),
+        ).fetchone()["total"]
+        if prior_daily_count > 0 and prior_daily_count % config["dailyLoyaltyBuyCount"] == 0:
+            voucher_code = grant_free_voucher(conn, phone, plan, "loyalty_free_daily_voucher")
+            conn.commit()
+            conn.close()
+            return jsonify({
+                "mode": "free_reward",
+                "voucherCode": voucher_code,
+                "message": "You earned a free daily voucher for your loyalty! It is already active.",
+            }), 201
+
+    loyalty_discount_applied = (
+        plan != DAILY_LOYALTY_PLAN
+        and prior_paid_count > 0
+        and (prior_paid_count + 1) % config["loyaltyPurchasesInterval"] == 0
+    )
+
+    base_price = round(config["planPrices"][plan] * config["speedTierMultiplier"][speed_tier])
     if loyalty_discount_applied:
-        base_price = round(base_price * (100 - LOYALTY_DISCOUNT_PERCENT) / 100)
+        base_price = round(base_price * (100 - config["loyaltyDiscountPercent"]) / 100)
     amount = base_price + (base_price * 5 + 99) // 100
     now = utc_now()
     client_id = f"public-{now.strftime('%Y%m%d%H%M%S%f')}"
     intent_id = f"pay-{now.strftime('%Y%m%d%H%M%S%f')}"
     reference_id = str(uuid.uuid4())
 
-    conn = get_db_connection()
     conn.execute(
         """
         INSERT INTO clients (id, customer_name, phone, plan, payment_method, device_count,
-            date, amount, discount, status, addons, router_id, device_mac, speed_tier, auto_renew, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            date, amount, discount, status, addons, router_id, device_mac, speed_tier, auto_renew, referred_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (client_id, "Public customer", phone, plan, provider, 1, now.strftime("%Y-%m-%d"),
-         amount, 0, "pending", "[]", "", device_mac, speed_tier, auto_renew, now.isoformat()),
+         amount, 0, "pending", "[]", "", device_mac, speed_tier, auto_renew, referred_by, now.isoformat()),
     )
     conn.execute(
         "INSERT INTO payment_intents (id, client_id, provider, amount, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -796,7 +926,7 @@ def validate_access():
         return jsonify({"active": False, "reason": "not_found"})
 
     if device_mac and voucher:
-        device_limit = SPEED_TIER_DEVICE_LIMIT.get(row["speed_tier"], 1)
+        device_limit = get_pricing_config()["speedTierDeviceLimit"].get(row["speed_tier"], 1)
         bound_devices = {r["device_mac"] for r in conn.execute(
             "SELECT device_mac FROM voucher_devices WHERE voucher_code = ?", (voucher,)
         ).fetchall()}
@@ -836,13 +966,13 @@ def customer_dashboard():
     conn = get_db_connection()
     if voucher:
         row = conn.execute(
-            "SELECT customer_name, plan, amount, status, voucher_code, expires_at, speed_tier, auto_renew, phone "
+            "SELECT customer_name, plan, amount, status, voucher_code, expires_at, speed_tier, auto_renew, phone, referral_code "
             "FROM clients WHERE voucher_code = ? ORDER BY created_at DESC LIMIT 1",
             (voucher,),
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT customer_name, plan, amount, status, voucher_code, expires_at, speed_tier, auto_renew, phone "
+            "SELECT customer_name, plan, amount, status, voucher_code, expires_at, speed_tier, auto_renew, phone, referral_code "
             "FROM clients WHERE phone = ? ORDER BY created_at DESC LIMIT 1",
             (phone,),
         ).fetchone()
@@ -879,6 +1009,37 @@ def support_info():
 def admin_payment_recipient():
     """Admin-only lookup of the manual payment recipient, used for the walk-in dial flow."""
     return jsonify({"recipient": MANUAL_PAYMENT_RECIPIENT})
+
+
+@app.get("/api/admin/pricing")
+@admin_required
+def admin_get_pricing():
+    """Admin view of effective voucher pricing, speed tiers, bundles, and loyalty settings."""
+    return jsonify(get_pricing_config())
+
+
+@app.put("/api/admin/pricing")
+@admin_required
+def admin_update_pricing():
+    """Admin control panel for voucher pricing, speed tiers, device limits, bundles, and loyalty rewards."""
+    payload = request.get_json(silent=True) or {}
+    allowed_keys = {
+        "planPrices", "planDurationsDays", "bundleBonusDays", "speedTierMultiplier",
+        "speedTierDeviceLimit", "loyaltyPurchasesInterval", "loyaltyDiscountPercent", "dailyLoyaltyBuyCount",
+    }
+    updates = {key: value for key, value in payload.items() if key in allowed_keys}
+    if not updates:
+        return jsonify({"error": "No recognized pricing fields were provided."}), 400
+
+    current = get_pricing_config()
+    for key, value in updates.items():
+        if isinstance(current.get(key), dict) and isinstance(value, dict):
+            current[key] = {**current[key], **value}
+        else:
+            current[key] = value
+    save_pricing_overrides(current)
+    log_activity("pricing_updated", f"keys={list(updates.keys())}")
+    return jsonify(current)
 
 
 @app.post("/api/payments/auto-renew-check")

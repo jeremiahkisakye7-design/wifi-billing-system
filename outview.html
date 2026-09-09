@@ -65,10 +65,12 @@
           <input id="publicPhone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07XXXXXXXX" required />
         </label>
         <div class="public-plans" role="group" aria-label="WiFi packages">
+          <button type="button" class="public-plan" data-public-plan="hourly"><strong>1 Hour</strong><span>UGX 200</span></button>
           <button type="button" class="public-plan" data-public-plan="shortSession"><strong>6 Hours</strong><span>UGX 500</span></button>
           <button type="button" class="public-plan selected" data-public-plan="fullDay"><strong>1 Day</strong><span>UGX 1,000</span></button>
           <button type="button" class="public-plan" data-public-plan="weekly"><strong>1 Week</strong><span>UGX 4,000</span></button>
           <button type="button" class="public-plan" data-public-plan="monthly"><strong>1 Month + bonus week</strong><span>UGX 25,000</span></button>
+          <button type="button" class="public-plan" data-public-plan="quarterly"><strong>3 Months + bonus week</strong><span>UGX 70,000</span></button>
         </div>
         <div class="public-plans" role="group" aria-label="Speed tier">
           <button type="button" class="public-plan selected" data-speed-tier="basic"><strong>Basic speed</strong><span>1 device</span></button>
@@ -77,6 +79,10 @@
         <label class="public-field public-checkbox">
           <input id="publicAutoRenew" type="checkbox" />
           <span>Auto-renew this plan when it expires</span>
+        </label>
+        <label class="public-field">
+          <span>Referral code (optional)</span>
+          <input id="publicReferralCode" type="text" placeholder="Friend's code" autocomplete="off" />
         </label>
         <div class="public-total" aria-live="polite">
           <span>WiFi price</span><strong id="publicPlanTotal">UGX 1,000</strong>
@@ -91,6 +97,7 @@
           <h3>Your WiFi access</h3>
           <div class="dashboard-row"><span>Plan</span><strong id="dashboardPlan">—</strong></div>
           <div class="dashboard-row"><span>Voucher</span><strong id="dashboardVoucher">—</strong></div>
+          <div class="dashboard-row"><span>Your referral code</span><strong id="dashboardReferralCode">—</strong></div>
           <div class="dashboard-row"><span>Time remaining</span><strong id="dashboardTime">00:00:00</strong></div>
           <p id="dashboardStatus" class="public-status">Active</p>
           <button type="button" id="dashboardRenewBtn" class="public-secondary-btn">Renew / buy more time</button>
