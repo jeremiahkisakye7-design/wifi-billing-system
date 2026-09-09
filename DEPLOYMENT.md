@@ -36,6 +36,17 @@ Provider onboarding must register the payment callback URL with the provider bef
 
 When a valid signed callback is received, the app verifies the amount and provider reference, marks the matching bill as paid, creates a server-side Wi-Fi voucher, and exposes its status through the payment intent endpoint. The customer page polls that intent and displays the voucher after confirmation.
 
+Once `MTN_API_USER`/`MTN_API_KEY`/`MTN_COLLECTION_PRIMARY_KEY` (or `AIRTEL_CLIENT_ID`/`AIRTEL_CLIENT_SECRET`) are set, `POST /api/payments/checkout` calls the provider's "request to pay" API directly, pushing a PIN prompt straight to the customer's phone. The frontend then polls `POST /api/payments/intents/<id>/sync`, which queries the provider's own transaction-status endpoint, so activation is automatic even before a webhook callback is registered.
+
+## Security and access notes
+
+- `MANUAL_PAYMENT_RECIPIENT` (the number that receives manual/USSD payments) is read only on the server and is never embedded in the committed frontend HTML/JS; the browser fetches a one-time dial/SMS link from `/api/payments/manual-instructions` at click time.
+- `SUPPORT_INQUIRY_NUMBER` is public and shown at the bottom of the customer portal.
+- A voucher is bound to the first device MAC that redeems it (via the `mac` query param a captive portal typically appends) and is rejected on a different device; `GET /api/access/validate` is the endpoint a router/captive-portal integration should call, optionally protected with a shared `ROUTER_API_KEY` sent as the `X-Router-Key` header.
+- Repeated failed payments from the same phone are throttled via `MAX_FAILED_PAYMENT_ATTEMPTS` / `FAILED_ATTEMPT_WINDOW_MINUTES`.
+- The app answers common OS/router captive-portal probe URLs (`/generate_204`, `/hotspot-detect.html`, etc.) with a redirect to the portal so a newly connected device is prompted automatically; the router/AP itself must still be configured (walled garden / hotspot mode) to intercept client traffic and point it at this app.
+- Actually cutting a device's network access off at expiry requires your router/RADIUS/hotspot software to poll or receive from `/api/access/validate`; this app cannot control hardware network access directly.
+
 ## Optional: static Netlify frontend
 
 The `netlify-deployment` folder remains available for a browser-only demo. It stores records in the current browser and should not be used as the shared activity system.

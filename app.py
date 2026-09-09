@@ -1,33 +1,163 @@
 import json
 import hashlib
 import hmac
+import logging
 import os
 import sqlite3
 import secrets
+import threading
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory, session
+import requests
+from flask import Flask, jsonify, redirect, request, send_from_directory, session
+from werkzeug.security import check_password_hash
+
+try:
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+except ImportError:  # optional dependency, degrade gracefully
+    Limiter = None
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("WIFI_DATA_DIR", BASE_DIR))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "billing.db"
+IS_PRODUCTION = os.environ.get("RENDER", "") != "" or os.environ.get("FLASK_ENV") == "production"
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("wifi-billing")
 
 app = Flask(__name__, static_folder=str(BASE_DIR), static_url_path="")
 app.secret_key = os.environ.get("SECRET_KEY", "local-development-key-change-me")
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=IS_PRODUCTION,
+)
+
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
 PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
+
+if Limiter:
+    limiter = Limiter(get_remote_address, app=app, default_limits=[], storage_uri=os.environ.get("RATE_LIMIT_STORAGE_URL", "memory://"))
+else:
+    class _NoopLimiter:
+        def limit(self, *_args, **_kwargs):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    limiter = _NoopLimiter()
 ALLOWED_PLANS = {"shortSession", "fullDay", "weekly", "monthly"}
 ALLOWED_STATUSES = {"pending", "paid", "expired"}
 PLAN_PRICES = {"shortSession": 500, "fullDay": 1000, "weekly": 4000, "monthly": 25000}
-PLAN_DURATIONS_DAYS = {"shortSession": 1, "fullDay": 1, "weekly": 7, "monthly": 30}
+PLAN_DURATIONS_DAYS = {"shortSession": 0.25, "fullDay": 1, "weekly": 7, "monthly": 30}
+
+PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "manual").lower()
+
+MTN_MERCHANT_CODE = os.environ.get("MTN_MERCHANT_CODE", "")
+MTN_COLLECTION_PRIMARY_KEY = os.environ.get("MTN_COLLECTION_PRIMARY_KEY", "")
+MTN_API_USER = os.environ.get("MTN_API_USER", "")
+MTN_API_KEY = os.environ.get("MTN_API_KEY", "")
+MTN_TARGET_ENVIRONMENT = os.environ.get("MTN_TARGET_ENVIRONMENT", "mtnuganda")
+MTN_BASE_URL = os.environ.get(
+    "MTN_BASE_URL",
+    "https://sandbox.momodeveloper.mtn.com" if MTN_TARGET_ENVIRONMENT == "sandbox" else "https://proxy.momoapi.mtn.com",
+)
+
+AIRTEL_MERCHANT_CODE = os.environ.get("AIRTEL_MERCHANT_CODE", "")
+AIRTEL_CLIENT_ID = os.environ.get("AIRTEL_CLIENT_ID", "")
+AIRTEL_CLIENT_SECRET = os.environ.get("AIRTEL_CLIENT_SECRET", "")
+AIRTEL_COUNTRY = os.environ.get("AIRTEL_COUNTRY", "UG")
+AIRTEL_CURRENCY = os.environ.get("AIRTEL_CURRENCY", "UGX")
+AIRTEL_TARGET_ENVIRONMENT = os.environ.get("AIRTEL_TARGET_ENVIRONMENT", "sandbox")
+AIRTEL_BASE_URL = os.environ.get(
+    "AIRTEL_BASE_URL",
+    "https://openapiuat.airtel.africa" if AIRTEL_TARGET_ENVIRONMENT == "sandbox" else "https://openapi.airtel.africa",
+)
+
+PAYMENT_CALLBACK_BASE_URL = os.environ.get("PAYMENT_CALLBACK_BASE_URL", "")
+
+# Kept server-side only; never sent to the public frontend source or static pages.
+MANUAL_PAYMENT_RECIPIENT = os.environ.get("MANUAL_PAYMENT_RECIPIENT", "0741808601")
+# Safe to display publicly as the customer support contact.
+SUPPORT_INQUIRY_NUMBER = os.environ.get("SUPPORT_INQUIRY_NUMBER", "0704270565")
+# Optional shared secret a router/captive-portal integration must send to query access status.
+ROUTER_API_KEY = os.environ.get("ROUTER_API_KEY", "")
+# Fraud detection: block an intent/phone after repeated failed provider callbacks.
+MAX_FAILED_PAYMENT_ATTEMPTS = int(os.environ.get("MAX_FAILED_PAYMENT_ATTEMPTS", "5"))
+FAILED_ATTEMPT_WINDOW_MINUTES = int(os.environ.get("FAILED_ATTEMPT_WINDOW_MINUTES", "30"))
+
+_token_cache_lock = threading.Lock()
+_token_cache = {}
+
+
+@app.before_request
+def _enforce_https():
+    if IS_PRODUCTION and request.headers.get("X-Forwarded-Proto", "https") == "http":
+        url = request.url.replace("http://", "https://", 1)
+        return redirect(url, code=301)
 
 
 def utc_now():
     return datetime.now(timezone.utc)
+
+
+def mask_phone(phone):
+    phone = str(phone or "")
+    return f"{phone[:4]}***{phone[-2:]}" if len(phone) > 6 else "***"
+
+
+def _phone_hash(phone):
+    return hashlib.sha256(str(phone).encode()).hexdigest()
+
+
+def is_payment_blocked(phone):
+    """Basic fraud guard: block a phone number after repeated recent failed payment attempts."""
+    cutoff = (utc_now() - timedelta(minutes=FAILED_ATTEMPT_WINDOW_MINUTES)).isoformat()
+    conn = get_db_connection()
+    count = conn.execute(
+        "SELECT COUNT(*) AS total FROM payment_failures WHERE phone_hash = ? AND created_at > ?",
+        (_phone_hash(phone), cutoff),
+    ).fetchone()["total"]
+    conn.close()
+    return count >= MAX_FAILED_PAYMENT_ATTEMPTS
+
+
+def record_payment_failure(phone):
+    conn = get_db_connection()
+    conn.execute(
+        "INSERT INTO payment_failures (id, phone_hash, created_at) VALUES (?, ?, ?)",
+        (secrets.token_hex(8), _phone_hash(phone), utc_now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def log_activity(event_type, detail="", request_obj=None):
+    try:
+        conn = get_db_connection()
+        conn.execute(
+            "INSERT INTO activity_log (id, event_type, detail, ip_address, created_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                secrets.token_hex(8),
+                event_type,
+                detail,
+                (request_obj or request).headers.get("X-Forwarded-For", (request_obj or request).remote_addr or "")[:64] if request_obj or request else "",
+                utc_now().isoformat(),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        logger.exception("Failed to write activity log for %s", event_type)
 
 
 def admin_required(view):
@@ -75,8 +205,11 @@ def init_db():
         conn.execute("ALTER TABLE clients ADD COLUMN voucher_code TEXT DEFAULT ''")
     if "expires_at" not in client_columns:
         conn.execute("ALTER TABLE clients ADD COLUMN expires_at TEXT")
+    if "device_mac" not in client_columns:
+        conn.execute("ALTER TABLE clients ADD COLUMN device_mac TEXT DEFAULT ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_status ON clients(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_date ON clients(date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_clients_device_mac ON clients(device_mac)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS payment_intents (
@@ -93,6 +226,33 @@ def init_db():
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_payment_intents_status ON payment_intents(status)")
+    payment_intent_columns = {row[1] for row in conn.execute("PRAGMA table_info(payment_intents)").fetchall()}
+    if "provider_status" not in payment_intent_columns:
+        conn.execute("ALTER TABLE payment_intents ADD COLUMN provider_status TEXT DEFAULT ''")
+    if "failure_reason" not in payment_intent_columns:
+        conn.execute("ALTER TABLE payment_intents ADD COLUMN failure_reason TEXT DEFAULT ''")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            detail TEXT DEFAULT '',
+            ip_address TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS payment_failures (
+            id TEXT PRIMARY KEY,
+            phone_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_payment_failures_phone_hash ON payment_failures(phone_hash)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS routers (
@@ -182,6 +342,148 @@ def init_db():
     conn.close()
 
 
+def _mtn_get_token():
+    cached = _token_cache.get("mtn")
+    if cached and cached["expires_at"] > time.time():
+        return cached["token"]
+    with _token_cache_lock:
+        cached = _token_cache.get("mtn")
+        if cached and cached["expires_at"] > time.time():
+            return cached["token"]
+        response = requests.post(
+            f"{MTN_BASE_URL}/collection/token/",
+            auth=(MTN_API_USER, MTN_API_KEY),
+            headers={"Ocp-Apim-Subscription-Key": MTN_COLLECTION_PRIMARY_KEY},
+            timeout=15,
+        )
+        response.raise_for_status()
+        data = response.json()
+        token = data["access_token"]
+        _token_cache["mtn"] = {"token": token, "expires_at": time.time() + int(data.get("expires_in", 3600)) - 60}
+        return token
+
+
+def mtn_request_to_pay(amount, phone, reference_id, external_id):
+    token = _mtn_get_token()
+    response = requests.post(
+        f"{MTN_BASE_URL}/collection/v1_0/requesttopay",
+        json={
+            "amount": str(amount),
+            "currency": "UGX" if MTN_TARGET_ENVIRONMENT != "sandbox" else "EUR",
+            "externalId": external_id,
+            "payer": {"partyIdType": "MSISDN", "partyId": phone.lstrip("+")},
+            "payerMessage": "WiFi access payment",
+            "payeeNote": "WiFi access payment",
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Reference-Id": reference_id,
+            "X-Target-Environment": MTN_TARGET_ENVIRONMENT,
+            "Ocp-Apim-Subscription-Key": MTN_COLLECTION_PRIMARY_KEY,
+            "Content-Type": "application/json",
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    return reference_id
+
+
+def mtn_get_status(reference_id):
+    token = _mtn_get_token()
+    response = requests.get(
+        f"{MTN_BASE_URL}/collection/v1_0/requesttopay/{reference_id}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Target-Environment": MTN_TARGET_ENVIRONMENT,
+            "Ocp-Apim-Subscription-Key": MTN_COLLECTION_PRIMARY_KEY,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    return response.json().get("status", "").upper()
+
+
+def _airtel_get_token():
+    cached = _token_cache.get("airtel")
+    if cached and cached["expires_at"] > time.time():
+        return cached["token"]
+    with _token_cache_lock:
+        cached = _token_cache.get("airtel")
+        if cached and cached["expires_at"] > time.time():
+            return cached["token"]
+        response = requests.post(
+            f"{AIRTEL_BASE_URL}/auth/oauth2/token",
+            json={
+                "client_id": AIRTEL_CLIENT_ID,
+                "client_secret": AIRTEL_CLIENT_SECRET,
+                "grant_type": "client_credentials",
+            },
+            headers={"Content-Type": "application/json"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        data = response.json()
+        token = data["access_token"]
+        _token_cache["airtel"] = {"token": token, "expires_at": time.time() + int(data.get("expires_in", 3600)) - 60}
+        return token
+
+
+def airtel_request_to_pay(amount, phone, reference_id):
+    token = _airtel_get_token()
+    response = requests.post(
+        f"{AIRTEL_BASE_URL}/merchant/v1/payments/",
+        json={
+            "reference": reference_id,
+            "subscriber": {"country": AIRTEL_COUNTRY, "currency": AIRTEL_CURRENCY, "msisdn": phone.lstrip("+").lstrip("256")},
+            "transaction": {"amount": amount, "country": AIRTEL_COUNTRY, "currency": AIRTEL_CURRENCY, "id": reference_id},
+        },
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Country": AIRTEL_COUNTRY,
+            "X-Currency": AIRTEL_CURRENCY,
+            "Content-Type": "application/json",
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    return reference_id
+
+
+def airtel_get_status(reference_id):
+    token = _airtel_get_token()
+    response = requests.get(
+        f"{AIRTEL_BASE_URL}/standard/v1/payments/{reference_id}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Country": AIRTEL_COUNTRY,
+            "X-Currency": AIRTEL_CURRENCY,
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    return response.json().get("data", {}).get("transaction", {}).get("status", "").upper()
+
+
+def mark_intent_paid(conn, intent, reference):
+    """Confirm a payment intent, activate the client's WiFi voucher, and log the event. Caller must commit/close conn."""
+    if intent["status"] == "paid":
+        return {"success": True, "duplicate": True}
+    confirmed_at = utc_now().isoformat()
+    client = conn.execute("SELECT plan FROM clients WHERE id = ?", (intent["client_id"],)).fetchone()
+    voucher_code = f"WIFI-{secrets.token_hex(4).upper()}"
+    expires_at = (utc_now() + timedelta(days=PLAN_DURATIONS_DAYS.get(client["plan"], 30))).isoformat()
+    conn.execute(
+        "UPDATE payment_intents SET status = 'paid', provider_reference = ?, confirmed_at = ? WHERE id = ?",
+        (reference, confirmed_at, intent["id"]),
+    )
+    conn.execute(
+        "UPDATE clients SET status = 'paid', voucher_code = ?, expires_at = ? WHERE id = ?",
+        (voucher_code, expires_at, intent["client_id"]),
+    )
+    log_activity("payment_confirmed", f"intent={intent['id']} voucher={voucher_code}")
+    return {"success": True, "clientId": intent["client_id"], "voucherCode": voucher_code, "expiresAt": expires_at}
+
+
 @app.route("/")
 def index():
     return send_from_directory(str(BASE_DIR), "outview.html")
@@ -193,11 +495,21 @@ def health():
 
 
 @app.post("/api/auth/login")
+@limiter.limit("5 per minute")
 def login():
     payload = request.get_json(silent=True) or {}
-    if payload.get("username") != ADMIN_USERNAME or payload.get("password") != ADMIN_PASSWORD:
+    username = str(payload.get("username", ""))
+    password = str(payload.get("password", ""))
+    if ADMIN_PASSWORD_HASH:
+        password_ok = check_password_hash(ADMIN_PASSWORD_HASH, password)
+    else:
+        password_ok = secrets.compare_digest(password, ADMIN_PASSWORD)
+    if not secrets.compare_digest(username, ADMIN_USERNAME) or not password_ok:
+        log_activity("login_failed", f"username={username}")
         return jsonify({"error": "Invalid username or password."}), 401
+    session.clear()
     session["admin_authenticated"] = True
+    log_activity("login_success", f"username={username}")
     return jsonify({"authenticated": True})
 
 
@@ -212,38 +524,92 @@ def auth_session():
     return jsonify({"authenticated": bool(session.get("admin_authenticated"))})
 
 
-@app.post("/api/payments/intents")
-def create_payment_intent():
+@app.post("/api/payments/checkout")
+@limiter.limit("10 per minute")
+def checkout():
+    """Create a payment intent and, when live credentials are configured, trigger an
+    automatic MTN MoMo / Airtel Money 'request to pay' prompt on the customer's phone."""
     payload = request.get_json(silent=True) or {}
     plan = payload.get("plan")
     phone = str(payload.get("phone", "")).strip()
     provider = str(payload.get("provider", "")).lower()
+    device_mac = str(payload.get("deviceMac", "")).strip()[:64]
     if plan not in PLAN_PRICES or not phone or provider not in {"momo", "airtel"}:
         return jsonify({"error": "Plan, phone, and payment provider are required."}), 400
-    if len(phone) < 9 or len(phone) > 15:
+    digits_only = phone.lstrip("+")
+    if not digits_only.isdigit() or len(digits_only) < 9 or len(digits_only) > 15:
         return jsonify({"error": "Enter a valid phone number."}), 400
+    if is_payment_blocked(phone):
+        log_activity("checkout_blocked_fraud", f"phone={mask_phone(phone)}")
+        return jsonify({"error": "Too many failed payment attempts. Please try again later."}), 429
 
     amount = PLAN_PRICES[plan] + (PLAN_PRICES[plan] * 5 + 99) // 100
     now = utc_now()
     client_id = f"public-{now.strftime('%Y%m%d%H%M%S%f')}"
     intent_id = f"pay-{now.strftime('%Y%m%d%H%M%S%f')}"
+    reference_id = str(uuid.uuid4())
+
     conn = get_db_connection()
     conn.execute(
         """
         INSERT INTO clients (id, customer_name, phone, plan, payment_method, device_count,
-            date, amount, discount, status, addons, router_id, created_at)
+            date, amount, discount, status, addons, router_id, device_mac, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (client_id, "Public customer", phone, plan, provider, 1, now.strftime("%Y-%m-%d"),
-         amount, 0, "pending", "[]", "", now.isoformat()),
+         amount, 0, "pending", "[]", "", device_mac, now.isoformat()),
     )
     conn.execute(
         "INSERT INTO payment_intents (id, client_id, provider, amount, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         (intent_id, client_id, provider, amount, phone, now.isoformat()),
     )
     conn.commit()
+
+    live_enabled = (
+        (provider == "momo" and MTN_API_USER and MTN_API_KEY and MTN_COLLECTION_PRIMARY_KEY)
+        or (provider == "airtel" and AIRTEL_CLIENT_ID and AIRTEL_CLIENT_SECRET)
+    )
+    if live_enabled:
+        try:
+            if provider == "momo":
+                mtn_request_to_pay(amount, digits_only, reference_id, intent_id)
+            else:
+                airtel_request_to_pay(amount, digits_only, reference_id)
+            conn.execute(
+                "UPDATE payment_intents SET provider_reference = ?, provider_status = 'pending' WHERE id = ?",
+                (reference_id, intent_id),
+            )
+            conn.commit()
+            log_activity("checkout_push_sent", f"intent={intent_id} provider={provider} phone={mask_phone(phone)}")
+            conn.close()
+            return jsonify({
+                "paymentIntentId": intent_id,
+                "clientId": client_id,
+                "amount": amount,
+                "mode": "automatic",
+                "message": "Check your phone and enter your mobile money PIN to complete payment.",
+            }), 201
+        except requests.RequestException as error:
+            logger.warning("Provider request-to-pay failed: %s", error)
+            conn.execute(
+                "UPDATE payment_intents SET provider_status = 'failed', failure_reason = ? WHERE id = ?",
+                (str(error)[:200], intent_id),
+            )
+            conn.commit()
+            conn.close()
+            record_payment_failure(phone)
+            log_activity("checkout_push_failed", f"intent={intent_id} provider={provider}")
+            return jsonify({"error": "Could not reach the mobile money provider. Please try again."}), 502
+
     conn.close()
-    return jsonify({"paymentIntentId": intent_id, "clientId": client_id, "amount": amount}), 201
+    log_activity("checkout_manual_mode", f"intent={intent_id} provider={provider} phone={mask_phone(phone)}")
+    return jsonify({
+        "paymentIntentId": intent_id,
+        "clientId": client_id,
+        "amount": amount,
+        "mode": "manual",
+        "message": "Provider credentials are not configured yet; complete payment using the USSD prompt.",
+    }), 201
 
 
 @app.post("/api/payments/webhook")
@@ -253,6 +619,7 @@ def payment_webhook():
     signature = request.headers.get("X-Payment-Signature", "")
     expected = hmac.new(PAYMENT_WEBHOOK_SECRET.encode(), request.get_data(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
+        log_activity("webhook_invalid_signature")
         return jsonify({"error": "Invalid payment signature."}), 401
 
     payload = request.get_json(silent=True) or {}
@@ -271,28 +638,64 @@ def payment_webhook():
     if intent is None:
         conn.close()
         return jsonify({"error": "Payment intent not found."}), 404
-    if intent["status"] == "paid":
-        conn.close()
-        return jsonify({"success": True, "duplicate": True})
     if amount != intent["amount"]:
         conn.close()
         return jsonify({"error": "Payment amount does not match the intent."}), 400
 
-    confirmed_at = utc_now().isoformat()
-    client = conn.execute("SELECT plan FROM clients WHERE id = ?", (intent["client_id"],)).fetchone()
-    voucher_code = f"WIFI-{secrets.token_hex(4).upper()}"
-    expires_at = (utc_now() + timedelta(days=PLAN_DURATIONS_DAYS.get(client["plan"], 30))).isoformat()
-    conn.execute(
-        "UPDATE payment_intents SET status = 'paid', provider_reference = ?, confirmed_at = ? WHERE id = ?",
-        (reference, confirmed_at, intent_id),
-    )
-    conn.execute(
-        "UPDATE clients SET status = 'paid', voucher_code = ?, expires_at = ? WHERE id = ?",
-        (voucher_code, expires_at, intent["client_id"]),
-    )
+    result = mark_intent_paid(conn, intent, reference)
     conn.commit()
     conn.close()
-    return jsonify({"success": True, "clientId": intent["client_id"], "voucherCode": voucher_code, "expiresAt": expires_at})
+    return jsonify(result)
+
+
+@app.post("/api/payments/intents/<intent_id>/sync")
+@limiter.limit("30 per minute")
+def sync_payment_intent(intent_id):
+    """Poll the provider's transaction status directly; used when a webhook callback
+    has not yet been registered with MTN/Airtel, keeping activation fully automatic."""
+    conn = get_db_connection()
+    intent = conn.execute("SELECT * FROM payment_intents WHERE id = ?", (intent_id,)).fetchone()
+    if intent is None:
+        conn.close()
+        return jsonify({"error": "Payment intent not found."}), 404
+    if intent["status"] == "paid" or not intent["provider_reference"]:
+        row = conn.execute(
+            """
+            SELECT p.status, p.amount, p.provider_reference, c.voucher_code, c.expires_at
+            FROM payment_intents p JOIN clients c ON c.id = p.client_id WHERE p.id = ?
+            """,
+            (intent_id,),
+        ).fetchone()
+        conn.close()
+        return jsonify(dict(row))
+
+    try:
+        if intent["provider"] == "momo":
+            provider_status = mtn_get_status(intent["provider_reference"])
+        else:
+            provider_status = airtel_get_status(intent["provider_reference"])
+    except requests.RequestException as error:
+        logger.warning("Provider status check failed: %s", error)
+        conn.close()
+        return jsonify({"status": intent["status"], "error": "Could not reach provider."}), 502
+
+    if provider_status in {"SUCCESSFUL", "SUCCESS", "TS"}:
+        result = mark_intent_paid(conn, intent, intent["provider_reference"])
+        conn.commit()
+        conn.close()
+        return jsonify(result)
+    if provider_status in {"FAILED", "REJECTED", "TF"}:
+        conn.execute("UPDATE payment_intents SET provider_status = ? WHERE id = ?", (provider_status, intent_id))
+        conn.commit()
+        conn.close()
+        record_payment_failure(intent["phone"])
+        log_activity("payment_failed", f"intent={intent_id} providerStatus={provider_status}")
+        return jsonify({"status": "failed", "providerStatus": provider_status})
+
+    conn.execute("UPDATE payment_intents SET provider_status = ? WHERE id = ?", (provider_status, intent_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "pending", "providerStatus": provider_status})
 
 
 @app.get("/api/payments/intents/<intent_id>")
@@ -309,6 +712,169 @@ def payment_intent_status(intent_id):
     if row is None:
         return jsonify({"error": "Payment intent not found."}), 404
     return jsonify(dict(row))
+
+
+@app.get("/api/access/validate")
+@limiter.limit("60 per minute")
+def validate_access():
+    """Endpoint for a router/captive-portal integration to confirm whether a voucher
+    or phone number currently has active, paid WiFi access. A voucher is bound to the
+    device MAC that redeemed it first, preventing reuse or sharing across devices."""
+    if ROUTER_API_KEY and not secrets.compare_digest(request.headers.get("X-Router-Key", ""), ROUTER_API_KEY):
+        return jsonify({"error": "Unauthorized router client."}), 401
+    voucher = str(request.args.get("voucher", "")).strip().upper()
+    phone = str(request.args.get("phone", "")).strip()
+    device_mac = str(request.args.get("mac", "")).strip()[:64]
+    if not voucher and not phone:
+        return jsonify({"error": "Provide a voucher code or phone number."}), 400
+
+    conn = get_db_connection()
+    if voucher:
+        row = conn.execute(
+            "SELECT plan, status, expires_at, phone, device_mac FROM clients WHERE voucher_code = ? ORDER BY created_at DESC LIMIT 1",
+            (voucher,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT plan, status, expires_at, phone, device_mac FROM clients WHERE phone = ? AND status = 'paid' ORDER BY created_at DESC LIMIT 1",
+            (phone,),
+        ).fetchone()
+
+    if row is None:
+        conn.close()
+        return jsonify({"active": False, "reason": "not_found"})
+
+    bound_mac = row["device_mac"] or ""
+    if device_mac and not bound_mac and voucher:
+        # First redemption on this device: bind the voucher to it.
+        conn.execute("UPDATE clients SET device_mac = ? WHERE voucher_code = ?", (device_mac, voucher))
+        conn.commit()
+        bound_mac = device_mac
+    conn.close()
+
+    if device_mac and bound_mac and device_mac != bound_mac:
+        log_activity("voucher_device_mismatch", f"voucher={voucher}")
+        return jsonify({"active": False, "reason": "bound_to_other_device"})
+
+    expires_at = row["expires_at"]
+    is_active = bool(row["status"] == "paid" and expires_at and datetime.fromisoformat(expires_at) > utc_now())
+    return jsonify({
+        "active": is_active,
+        "plan": row["plan"],
+        "expiresAt": expires_at,
+        "reason": None if is_active else "expired",
+    })
+
+
+@app.get("/api/dashboard")
+@limiter.limit("60 per minute")
+def customer_dashboard():
+    """Public, read-only remaining-time dashboard keyed by voucher code or phone."""
+    voucher = str(request.args.get("voucher", "")).strip().upper()
+    phone = str(request.args.get("phone", "")).strip()
+    if not voucher and not phone:
+        return jsonify({"error": "Provide a voucher code or phone number."}), 400
+
+    conn = get_db_connection()
+    if voucher:
+        row = conn.execute(
+            "SELECT customer_name, plan, amount, status, voucher_code, expires_at FROM clients WHERE voucher_code = ? ORDER BY created_at DESC LIMIT 1",
+            (voucher,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT customer_name, plan, amount, status, voucher_code, expires_at FROM clients WHERE phone = ? ORDER BY created_at DESC LIMIT 1",
+            (phone,),
+        ).fetchone()
+    conn.close()
+    if row is None:
+        return jsonify({"error": "No account found."}), 404
+
+    item = dict(row)
+    expires_at = item.get("expires_at")
+    now = utc_now()
+    remaining_seconds = 0
+    if expires_at:
+        remaining_seconds = max(0, int((datetime.fromisoformat(expires_at) - now).total_seconds()))
+    item["remainingSeconds"] = remaining_seconds
+    item["isActive"] = item["status"] == "paid" and remaining_seconds > 0
+    return jsonify(item)
+
+
+@app.get("/api/support-info")
+def support_info():
+    """Public support contact only; the merchant receiving number is never exposed here."""
+    return jsonify({"inquiryNumber": SUPPORT_INQUIRY_NUMBER})
+
+
+@app.get("/api/admin/payment-recipient")
+@admin_required
+def admin_payment_recipient():
+    """Admin-only lookup of the manual payment recipient, used for the walk-in dial flow."""
+    return jsonify({"recipient": MANUAL_PAYMENT_RECIPIENT})
+
+
+@app.post("/api/payments/manual-instructions")
+@limiter.limit("20 per minute")
+def manual_payment_instructions():
+    """Build a dial/SMS/app link server-side so the merchant recipient number is never
+    present in the committed frontend source, only in a just-in-time API response."""
+    payload = request.get_json(silent=True) or {}
+    intent_id = str(payload.get("paymentIntentId", "")).strip()
+    provider = str(payload.get("provider", "")).lower()
+    method = str(payload.get("method", "ussd")).lower()
+    if provider not in {"momo", "airtel"}:
+        return jsonify({"error": "Invalid provider."}), 400
+
+    conn = get_db_connection()
+    intent = conn.execute("SELECT amount FROM payment_intents WHERE id = ?", (intent_id,)).fetchone()
+    conn.close()
+    if intent is None:
+        return jsonify({"error": "Payment intent not found."}), 404
+    total = intent["amount"]
+    recipient = MANUAL_PAYMENT_RECIPIENT.replace(" ", "")
+
+    if method == "call":
+        return jsonify({"callUrl": f"tel:+256{recipient[1:]}"})
+    if method == "sms":
+        message = f"WiFi instant payment. Total: UGX {total:,}. Please confirm payment."
+        return jsonify({"smsUrl": f"sms:+256{recipient[1:]}?body={message}"})
+    if method == "web":
+        web_url = "https://www.mtn.co.ug/momo/" if provider == "momo" else "https://www.airtel.co.ug/airtel-money"
+        return jsonify({"webUrl": web_url})
+    if method == "app":
+        deep_link = "mtnmomo://send" if provider == "momo" else "airtelmoney://send"
+        return jsonify({"appUrl": f"{deep_link}?recipient={recipient}&amount={total}"})
+
+    ussd_prefix = "*165*1*1" if provider == "momo" else "*185*1*1"
+    ussd_code = f"{ussd_prefix}*{recipient}*{total}#"
+    return jsonify({"ussdDialUrl": f"tel:{ussd_code}"})
+
+
+_CAPTIVE_PORTAL_PROBE_PATHS = [
+    "/generate_204",
+    "/gen_204",
+    "/hotspot-detect.html",
+    "/library/test/success.html",
+    "/ncsi.txt",
+    "/connecttest.txt",
+    "/success.txt",
+    "/canonical.html",
+]
+
+
+@app.route("/generate_204")
+@app.route("/gen_204")
+@app.route("/hotspot-detect.html")
+@app.route("/library/test/success.html")
+@app.route("/ncsi.txt")
+@app.route("/connecttest.txt")
+@app.route("/success.txt")
+@app.route("/canonical.html")
+def captive_portal_probe():
+    """OS/router internet-check URLs: reply with a redirect instead of 204/success so the
+    device's captive portal popup opens our billing page immediately after it connects."""
+    return redirect("/", code=302)
 
 
 @app.route("/api/clients", methods=["GET", "POST"])

@@ -25,8 +25,6 @@ const ADDON_PRICES = {
 const DEVICE_PRICE = 2500;
 const TAX_RATE = 0.15;
 const SERVICE_CHARGE_RATE = 0.05;
-const MOBILE_MONEY_NUMBER = '0741808601';
-const MOBILE_MONEY_SMS_LINK = `sms:+256${MOBILE_MONEY_NUMBER.slice(1)}`;
 const MOBILE_MONEY_USSD_PREFIX = {
   momo: '*165*1*1',
   airtel: '*185*1*1',
@@ -42,7 +40,12 @@ const MOBILE_MONEY_APP = {
 const PAYMENT_SETTINGS_KEY = 'wifiBillingPaymentSettings';
 const VOUCHERS_KEY = 'wifiBillingVouchers';
 const PAYMENT_INTENT_KEY = 'wifiBillingPaymentIntent';
-const DEFAULT_PAYMENT_SETTINGS = { recipient: '0741808601', method: 'ussd' };
+const DASHBOARD_KEY = 'wifiBillingActiveVoucher';
+const DEFAULT_PAYMENT_SETTINGS = { method: 'ussd' };
+const SUPPORT_INQUIRY_NUMBER_DEFAULT = '0704270565';
+let SUPPORT_INQUIRY_NUMBER = SUPPORT_INQUIRY_NUMBER_DEFAULT;
+const deviceParams = new URLSearchParams(window.location.search);
+const DEVICE_MAC = deviceParams.get('mac') || deviceParams.get('client_mac') || deviceParams.get('device_mac') || '';
 let publicPlan = 'fullDay';
 let deferredInstallPrompt;
 
@@ -62,8 +65,13 @@ const publicAmountDueEl = document.getElementById('publicAmountDue');
 const voucherInput = document.getElementById('voucherInput');
 const redeemVoucherBtn = document.getElementById('redeemVoucherBtn');
 const voucherStatus = document.getElementById('voucherStatus');
+const dashboardPanel = document.getElementById('customerDashboard');
+const dashboardVoucherEl = document.getElementById('dashboardVoucher');
+const dashboardPlanEl = document.getElementById('dashboardPlan');
+const dashboardTimeEl = document.getElementById('dashboardTime');
+const dashboardStatusEl = document.getElementById('dashboardStatus');
+const dashboardRenewBtn = document.getElementById('dashboardRenewBtn');
 const paymentSettingsForm = document.getElementById('paymentSettingsForm');
-const paymentRecipientInput = document.getElementById('paymentRecipientInput');
 const paymentMethodSetting = document.getElementById('paymentMethodSetting');
 const paymentSettingsStatus = document.getElementById('paymentSettingsStatus');
 const logoutBtn = document.getElementById('logoutBtn');
@@ -207,8 +215,30 @@ function createVoucher(record) {
   return code;
 }
 
-function redeemVoucher() {
+async function redeemVoucher() {
   const code = voucherInput.value.trim().toUpperCase();
+  if (!code) {
+    voucherStatus.textContent = 'Enter a voucher code first.';
+    return;
+  }
+  if (!IS_STATIC_DEPLOYMENT) {
+    try {
+      const response = await fetch(`${API_BASE}/dashboard?voucher=${encodeURIComponent(code)}`);
+      const data = await response.json();
+      if (response.ok && data.isActive) {
+        localStorage.setItem(DASHBOARD_KEY, JSON.stringify({ voucherCode: code }));
+        voucherStatus.textContent = `WiFi access active. See your remaining time below.`;
+        renderDashboard({ voucherCode: code, plan: data.plan, expiresAt: data.expires_at });
+        return;
+      }
+      voucherStatus.textContent = data.error || 'This voucher is invalid or has expired.';
+      return;
+    } catch (error) {
+      console.warn('Voucher lookup unavailable', error);
+      voucherStatus.textContent = 'Could not verify the voucher right now. Please try again.';
+      return;
+    }
+  }
   const voucher = getVouchers()[code];
   if (!voucher) {
     voucherStatus.textContent = 'Voucher not found. Ask the admin to confirm payment.';
@@ -555,17 +585,32 @@ function renderInvoices() {
   `).join('');
 }
 
-function sendPaymentDetails(method, amount) {
+async function sendPaymentDetails(method, amount) {
   const customerPhone = customerPhoneInput.value.trim() || 'Not provided';
+  const recipient = await fetchAdminPaymentRecipient();
+  if (!recipient) return;
   const message = `WiFi payment request via ${method}. Customer phone: ${customerPhone}. Amount: ${formatCurrency(amount)}. Please send the payment prompt.`;
-  window.location.href = `${MOBILE_MONEY_SMS_LINK}?body=${encodeURIComponent(message)}`;
+  window.location.href = `sms:+256${recipient.slice(1)}?body=${encodeURIComponent(message)}`;
+}
+
+async function fetchAdminPaymentRecipient() {
+  try {
+    const response = await fetch(`${API_BASE}/admin/payment-recipient`);
+    if (!response.ok) throw new Error('Unavailable');
+    const data = await response.json();
+    return data.recipient;
+  } catch (error) {
+    console.error(error);
+    alert('Could not load the payment recipient. Please log in as admin and try again.');
+    return '';
+  }
 }
 
 function launchMobileMoney() {
   openMobileMoneyPortal('momo');
 }
 
-function openMobileMoneyPortal(provider) {
+async function openMobileMoneyPortal(provider) {
   const customerName = customerNameInput.value.trim();
   const customerPhone = customerPhoneInput.value.trim();
   if (!customerName || !customerPhone) {
@@ -576,9 +621,14 @@ function openMobileMoneyPortal(provider) {
 
   paymentMethodInput.value = provider === 'momo' ? 'Mobile Money' : 'Mobile Money';
   const total = Math.max(0, Math.round(calculateBill().total));
-  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${MOBILE_MONEY_NUMBER}*${total}#`;
+  const recipient = await fetchAdminPaymentRecipient();
+  if (!recipient) return;
+  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${recipient}*${total}#`;
   window.location.href = `tel:${encodeURIComponent(ussdCode)}`;
 }
+
+let paymentPollTimer = null;
+let dashboardCountdownTimer = null;
 
 async function openPublicMobileMoney(provider) {
   const phone = publicPhoneInput?.value.trim();
@@ -590,48 +640,106 @@ async function openPublicMobileMoney(provider) {
   const planPrice = PLAN_PRICES[publicPlan];
   const serviceCharge = Math.ceil(planPrice * SERVICE_CHARGE_RATE);
   const total = planPrice + serviceCharge;
-  if (!IS_STATIC_DEPLOYMENT) {
-    try {
-      const intentResponse = await fetch(`${API_BASE}/payments/intents`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: publicPlan, phone, provider }),
-      });
-      if (!intentResponse.ok) throw new Error('Could not create payment intent');
-      const intent = await intentResponse.json();
-      localStorage.setItem(PAYMENT_INTENT_KEY, intent.paymentIntentId);
-      publicPaymentStatus.textContent = `Payment request ${intent.paymentIntentId} created for ${formatCurrency(intent.amount)}.`;
-    } catch (error) {
-      console.error(error);
-      publicPaymentStatus.textContent = 'Could not start payment. Please try again.';
+
+  if (IS_STATIC_DEPLOYMENT) {
+    publicPaymentStatus.textContent = `This demo page cannot process payment. Call support at ${SUPPORT_INQUIRY_NUMBER} to pay.`;
+    return;
+  }
+
+  clearInterval(paymentPollTimer);
+  document.getElementById('publicPayBtn').disabled = true;
+  publicPaymentStatus.textContent = 'Sending payment request...';
+  try {
+    const response = await fetch(`${API_BASE}/payments/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: publicPlan, phone, provider, deviceMac: DEVICE_MAC }),
+    });
+    const intent = await response.json();
+    if (!response.ok) throw new Error(intent.error || 'Could not start payment');
+    localStorage.setItem(PAYMENT_INTENT_KEY, intent.paymentIntentId);
+    publicPaymentStatus.textContent = intent.message || `Payment request created for ${formatCurrency(intent.amount)}.`;
+
+    if (intent.mode === 'manual') {
+      await launchManualUssd(intent.paymentIntentId, provider, total);
+    }
+    startPaymentPolling(intent.paymentIntentId);
+  } catch (error) {
+    console.error(error);
+    publicPaymentStatus.textContent = 'Could not start payment. Please try again.';
+  } finally {
+    document.getElementById('publicPayBtn').disabled = false;
+  }
+}
+
+async function launchManualUssd(paymentIntentId, provider, total) {
+  const settings = getPaymentSettings();
+  try {
+    const response = await fetch(`${API_BASE}/payments/manual-instructions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paymentIntentId, provider, method: settings.method }),
+    });
+    const instructions = await response.json();
+    if (!response.ok) throw new Error(instructions.error || 'Unavailable');
+
+    if (instructions.callUrl) {
+      window.location.href = instructions.callUrl;
       return;
     }
+    if (instructions.smsUrl) {
+      window.location.href = instructions.smsUrl;
+      return;
+    }
+    if (instructions.webUrl) {
+      window.location.href = instructions.webUrl;
+      return;
+    }
+    if (instructions.appUrl) {
+      const fallbackTimer = window.setTimeout(() => { window.location.href = MOBILE_MONEY_WEB[provider]; }, 1200);
+      window.location.href = instructions.appUrl;
+      window.setTimeout(() => window.clearTimeout(fallbackTimer), 1000);
+      return;
+    }
+    if (instructions.ussdDialUrl) {
+      publicPaymentStatus.textContent = `Opening ${provider === 'momo' ? 'MTN' : 'Airtel'} Money. Check the total, then enter your PIN.`;
+      window.location.href = instructions.ussdDialUrl;
+    }
+  } catch (error) {
+    console.error(error);
+    publicPaymentStatus.textContent = `Could not open your mobile money app. Call support at ${SUPPORT_INQUIRY_NUMBER}.`;
   }
-  const settings = getPaymentSettings();
-  if (settings.method === 'call') {
-    window.location.href = `tel:+256${settings.recipient.slice(1)}`;
-    return;
-  }
-  if (settings.method === 'sms') {
-    const message = `WiFi instant payment. Total: UGX ${total.toLocaleString()}. Please confirm payment.`;
-    window.location.href = `sms:+256${settings.recipient.slice(1)}?body=${encodeURIComponent(message)}`;
-    return;
-  }
-  if (settings.method === 'web') {
-    window.location.href = MOBILE_MONEY_WEB[provider];
-    return;
-  }
-  if (settings.method === 'app') {
-    const appUrl = `${MOBILE_MONEY_APP[provider]}?recipient=${encodeURIComponent(settings.recipient)}&amount=${total}`;
-    const fallbackTimer = window.setTimeout(() => { window.location.href = MOBILE_MONEY_WEB[provider]; }, 1200);
-    window.location.href = appUrl;
-    window.setTimeout(() => window.clearTimeout(fallbackTimer), 1000);
-    return;
-  }
-  const recipient = settings.recipient.replace(/\D/g, '');
-  const ussdCode = `${MOBILE_MONEY_USSD_PREFIX[provider]}*${recipient}*${total}#`;
-  publicPaymentStatus.textContent = `Opening ${provider === 'momo' ? 'MTN' : 'Airtel'} Money. Check the total, then enter your PIN.`;
-  window.location.href = `tel:${encodeURIComponent(ussdCode)}`;
+}
+
+function startPaymentPolling(intentId) {
+  let attempts = 0;
+  const maxAttempts = 45; // ~3 minutes at 4s intervals
+  clearInterval(paymentPollTimer);
+  paymentPollTimer = setInterval(async () => {
+    attempts += 1;
+    try {
+      const response = await fetch(`${API_BASE}/payments/intents/${encodeURIComponent(intentId)}/sync`, { method: 'POST' });
+      const payment = await response.json();
+      if (payment.status === 'paid' && payment.voucherCode) {
+        clearInterval(paymentPollTimer);
+        localStorage.removeItem(PAYMENT_INTENT_KEY);
+        activateDashboard(payment.voucherCode, publicPhoneInput.value.trim(), payment.expiresAt);
+        return;
+      }
+      if (payment.status === 'failed') {
+        clearInterval(paymentPollTimer);
+        publicPaymentStatus.textContent = 'Payment failed or was cancelled. Please try again.';
+        return;
+      }
+      publicPaymentStatus.textContent = 'Waiting for you to confirm the payment on your phone...';
+    } catch (error) {
+      console.warn('Payment status unavailable', error);
+    }
+    if (attempts >= maxAttempts) {
+      clearInterval(paymentPollTimer);
+      publicPaymentStatus.textContent = 'Still waiting for confirmation. Use "Use voucher" once you receive your code.';
+    }
+  }, 4000);
 }
 
 async function checkPaymentIntent() {
@@ -642,16 +750,93 @@ async function checkPaymentIntent() {
     if (!response.ok) return;
     const payment = await response.json();
     if (payment.status === 'paid' && payment.voucher_code) {
-      voucherStatus.textContent = `Payment confirmed. Your WiFi voucher is ${payment.voucher_code}.`;
-      voucherInput.value = payment.voucher_code;
       localStorage.removeItem(PAYMENT_INTENT_KEY);
+      activateDashboard(payment.voucher_code, publicPhoneInput?.value.trim() || '', payment.expires_at);
     } else {
-      publicPaymentStatus.textContent = `Waiting for payment confirmation for ${intentId}.`;
+      startPaymentPolling(intentId);
     }
   } catch (error) {
     console.warn('Payment status unavailable', error);
   }
 }
+
+function activateDashboard(voucherCode, phone, expiresAt) {
+  localStorage.setItem(DASHBOARD_KEY, JSON.stringify({ voucherCode, phone }));
+  voucherStatus.textContent = `Payment confirmed. Your WiFi voucher is ${voucherCode}.`;
+  voucherInput.value = voucherCode;
+  publicPaymentStatus.textContent = 'You are connected. See your remaining time below.';
+  renderDashboard({ voucherCode, plan: publicPlan, expiresAt });
+}
+
+function renderDashboard(data) {
+  if (!dashboardPanel) return;
+  clearInterval(dashboardCountdownTimer);
+  dashboardPanel.classList.remove('hidden');
+  dashboardVoucherEl.textContent = data.voucherCode || '—';
+  dashboardPlanEl.textContent = formatPlanName(data.plan || publicPlan);
+  const expiresAtMs = data.expiresAt ? new Date(data.expiresAt).getTime() : 0;
+
+  const tick = () => {
+    const remainingMs = expiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      dashboardTimeEl.textContent = 'Expired';
+      dashboardStatusEl.textContent = 'Your access has expired. Buy a new package to reconnect.';
+      clearInterval(dashboardCountdownTimer);
+      return;
+    }
+    const hours = Math.floor(remainingMs / 3600000);
+    const minutes = Math.floor((remainingMs % 3600000) / 60000);
+    const seconds = Math.floor((remainingMs % 60000) / 1000);
+    dashboardTimeEl.textContent = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    dashboardStatusEl.textContent = 'Active';
+  };
+  tick();
+  dashboardCountdownTimer = setInterval(tick, 1000);
+}
+
+async function loadStoredDashboard() {
+  if (IS_STATIC_DEPLOYMENT) return;
+  try {
+    const stored = JSON.parse(localStorage.getItem(DASHBOARD_KEY) || 'null');
+    if (!stored) return;
+    const query = stored.voucherCode ? `voucher=${encodeURIComponent(stored.voucherCode)}` : `phone=${encodeURIComponent(stored.phone)}`;
+    const response = await fetch(`${API_BASE}/dashboard?${query}`);
+    if (!response.ok) return;
+    const data = await response.json();
+    if (data.isActive) {
+      renderDashboard({ voucherCode: data.voucher_code, plan: data.plan, expiresAt: data.expires_at });
+    } else {
+      localStorage.removeItem(DASHBOARD_KEY);
+    }
+  } catch (error) {
+    console.warn('Dashboard unavailable', error);
+  }
+}
+
+function renewAccess() {
+  clearInterval(dashboardCountdownTimer);
+  dashboardPanel?.classList.add('hidden');
+  publicPhoneInput?.focus();
+}
+
+async function loadSupportInfo() {
+  const target = document.getElementById('supportInquiryNumber');
+  if (!target) return;
+  if (IS_STATIC_DEPLOYMENT) {
+    target.textContent = SUPPORT_INQUIRY_NUMBER;
+    return;
+  }
+  try {
+    const response = await fetch(`${API_BASE}/support-info`);
+    if (!response.ok) throw new Error('Unavailable');
+    const data = await response.json();
+    SUPPORT_INQUIRY_NUMBER = data.inquiryNumber || SUPPORT_INQUIRY_NUMBER;
+  } catch (error) {
+    console.warn('Support info unavailable', error);
+  }
+  target.textContent = SUPPORT_INQUIRY_NUMBER;
+}
+
 
 function getPaymentSettings() {
   try {
@@ -663,7 +848,6 @@ function getPaymentSettings() {
 
 function loadPaymentSettings() {
   const settings = getPaymentSettings();
-  paymentRecipientInput.value = settings.recipient;
   paymentMethodSetting.value = settings.method;
 }
 
@@ -873,15 +1057,11 @@ document.querySelectorAll('[data-public-plan]').forEach((planButton) => {
 
 document.getElementById('publicPayBtn').addEventListener('click', () => openPublicMobileMoney(publicProviderInput.value));
 redeemVoucherBtn?.addEventListener('click', redeemVoucher);
+dashboardRenewBtn?.addEventListener('click', renewAccess);
 
 paymentSettingsForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  const recipient = paymentRecipientInput.value.replace(/\D/g, '');
-  if (!/^07\d{8}$/.test(recipient)) {
-    paymentSettingsStatus.textContent = 'Use a valid Uganda number such as 07XXXXXXXX.';
-    return;
-  }
-  localStorage.setItem(PAYMENT_SETTINGS_KEY, JSON.stringify({ recipient, method: paymentMethodSetting.value }));
+  localStorage.setItem(PAYMENT_SETTINGS_KEY, JSON.stringify({ method: paymentMethodSetting.value }));
   paymentSettingsStatus.textContent = 'Payment settings saved on this admin device.';
 });
 
@@ -965,13 +1145,14 @@ document.querySelectorAll('.addon').forEach((checkbox) => {
 startDateInput.value = new Date().toISOString().slice(0, 10);
 loadPaymentSettings();
 updatePublicAmount();
+loadSupportInfo();
 if (IS_STATIC_DEPLOYMENT) {
   fetchRecords();
 } else {
   calculateBill();
   restoreAdminSession();
   checkPaymentIntent();
-  window.setInterval(checkPaymentIntent, 5000);
+  loadStoredDashboard();
 }
 window.setInterval(() => {
   expireRecords();

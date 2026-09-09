@@ -65,6 +65,7 @@
           <input id="publicPhone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07XXXXXXXX" required />
         </label>
         <div class="public-plans" role="group" aria-label="WiFi packages">
+          <button type="button" class="public-plan" data-public-plan="shortSession"><strong>6 Hours</strong><span>UGX 500</span></button>
           <button type="button" class="public-plan selected" data-public-plan="fullDay"><strong>1 Day</strong><span>UGX 1,000</span></button>
           <button type="button" class="public-plan" data-public-plan="weekly"><strong>1 Week</strong><span>UGX 4,000</span></button>
           <button type="button" class="public-plan" data-public-plan="monthly"><strong>1 Month</strong><span>UGX 25,000</span></button>
@@ -75,9 +76,17 @@
           <span class="public-total-label">Total to pay</span><strong id="publicAmountDue" class="public-total-value">UGX 1,050</strong>
         </div>
         <div class="public-payments">
-          <button type="button" id="publicPayBtn" class="primary-btn">Pay for instant WiFi</button>
+          <button type="button" id="publicPayBtn" class="primary-btn">Buy Access</button>
         </div>
         <p id="publicPaymentStatus" class="public-status" aria-live="polite">Your wallet will open. Enter the total shown above.</p>
+        <div id="customerDashboard" class="customer-dashboard hidden">
+          <h3>Your WiFi access</h3>
+          <div class="dashboard-row"><span>Plan</span><strong id="dashboardPlan">—</strong></div>
+          <div class="dashboard-row"><span>Voucher</span><strong id="dashboardVoucher">—</strong></div>
+          <div class="dashboard-row"><span>Time remaining</span><strong id="dashboardTime">00:00:00</strong></div>
+          <p id="dashboardStatus" class="public-status">Active</p>
+          <button type="button" id="dashboardRenewBtn" class="public-secondary-btn">Renew / buy more time</button>
+        </div>
         <div class="voucher-box">
           <label class="public-field">
             <span>Already have a WiFi voucher?</span>
@@ -88,6 +97,7 @@
         </div>
         <button type="button" id="adminAccessBtn" class="admin-access-btn">Admin</button>
         <button type="button" id="publicInstallAppBtn" class="admin-access-btn hidden">Install app</button>
+        <p class="support-footer">Need help? Call support: <strong id="supportInquiryNumber">0704270565</strong></p>
       </div>
     </section>
 
@@ -159,10 +169,6 @@
           <span class="muted-badge">Admin only</span>
         </div>
         <form id="paymentSettingsForm" class="payment-settings-form">
-          <label>
-            <span>Number that receives payment</span>
-            <input id="paymentRecipientInput" type="tel" inputmode="tel" placeholder="07XXXXXXXX" required />
-          </label>
           <label>
             <span>Payment method</span>
             <select id="paymentMethodSetting">
