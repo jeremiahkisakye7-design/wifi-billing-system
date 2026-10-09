@@ -19,7 +19,7 @@ from pathlib import Path
 
 import requests
 from flask import Flask, Response, jsonify, redirect, request, send_from_directory, session
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 try:
@@ -61,8 +61,12 @@ ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
 ADMIN_TOTP_SECRET = os.environ.get("ADMIN_TOTP_SECRET", "").replace(" ", "").upper()
 ROUTER_MAC_SIGNING_SECRET = os.environ.get("ROUTER_MAC_SIGNING_SECRET", "")
 PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
+if IS_PRODUCTION and not ADMIN_PASSWORD_HASH and ADMIN_PASSWORD:
+    ADMIN_PASSWORD_HASH = generate_password_hash(ADMIN_PASSWORD)
+    ADMIN_PASSWORD = ""
+    logger.warning("ADMIN_PASSWORD was hashed at startup; prefer setting ADMIN_PASSWORD_HASH.")
 if IS_PRODUCTION and not ADMIN_PASSWORD_HASH:
-    raise RuntimeError("Production requires ADMIN_PASSWORD_HASH; plaintext admin passwords are not accepted.")
+    raise RuntimeError("Production requires ADMIN_PASSWORD_HASH or ADMIN_PASSWORD.")
 if IS_PRODUCTION and (not ADMIN_USERNAME or ADMIN_USERNAME == "admin"):
     raise RuntimeError("Production requires a private ADMIN_USERNAME other than 'admin'.")
 if IS_PRODUCTION and not ADMIN_TOTP_SECRET:
