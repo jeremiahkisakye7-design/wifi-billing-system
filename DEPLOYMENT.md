@@ -4,11 +4,13 @@
 
 Deploy the Flask app as one web service. This serves the customer portal, admin activity dashboard, API, SQLite database, and installable app from the same URL.
 
+For local phased setup, Docker Compose, the voucher/session API, test commands, and router/captive-portal steps, see [SYSTEM_GUIDE.md](SYSTEM_GUIDE.md). The new Docker setup runs the web service and expiry worker against one persistent SQLite volume.
+
 ### Render deployment
 
 1. Push this project to a GitHub repository.
 2. In Render, choose **New + > Blueprint** and select the repository.
-3. When prompted, enter a private `ADMIN_USERNAME` and `ADMIN_PASSWORD`. Render generates the session `SECRET_KEY` automatically.
+3. Render generates `SECRET_KEY`. Set a private `ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH`, `ADMIN_TOTP_SECRET`, `ROUTER_API_KEY`, and `ROUTER_MAC_SIGNING_SECRET`. Production startup intentionally fails if these are missing; plaintext `ADMIN_PASSWORD` is development-only.
 4. Render will use `render.yaml` to install the dependencies and start the app.
 5. Open the generated HTTPS URL. Log in through **Admin** to check billing activity from any device.
 
@@ -42,10 +44,14 @@ Once `MTN_API_USER`/`MTN_API_KEY`/`MTN_COLLECTION_PRIMARY_KEY` (or `AIRTEL_CLIEN
 
 - `MANUAL_PAYMENT_RECIPIENT` (the number that receives manual/USSD payments) is read only on the server and is never embedded in the committed frontend HTML/JS; the browser fetches a one-time dial/SMS link from `/api/payments/manual-instructions` at click time.
 - `SUPPORT_INQUIRY_NUMBER` is public and shown at the bottom of the customer portal.
-- A voucher is bound to the first device MAC that redeems it (via the `mac` query param a captive portal typically appends) and is rejected on a different device; `GET /api/access/validate` is the endpoint a router/captive-portal integration should call, optionally protected with a shared `ROUTER_API_KEY` sent as the `X-Router-Key` header.
+- Optional SMS receipts via Africa's Talking: set `AT_USERNAME` and `AT_API_KEY` (and `AT_SENDER_ID` if you have one). Without them no SMS is sent.
+- Admin extras: revenue reports and CSV export, coupons, refunds (books only; return the money via mobile money yourself), reseller agents (`Authorization: Bearer <token>` on `/api/agent/*`), per-plan speed/data limits and an audit log.
+- A voucher starts its shared timer on first successful access login. MAC sessions are tracked and limited by `MAX_DEVICES_PER_VOUCHER` (default one, configurable per voucher); the router must pass a stable MAC to enforce limits and reconnects. TVs are treated like any other device when their MAC is supplied. Router calls to `GET /api/access/validate` and `/api/access/reconnect` can be protected with `ROUTER_API_KEY` sent as `X-Router-Key`.
+- Admin mutations require a CSRF token and admin login requires TOTP in production. The captive portal requires a valid, short-lived signed MAC ticket from a trusted router adapter; do not trust a customer-edited MAC query parameter.
 - Repeated failed payments from the same phone are throttled via `MAX_FAILED_PAYMENT_ATTEMPTS` / `FAILED_ATTEMPT_WINDOW_MINUTES`.
 - The app answers common OS/router captive-portal probe URLs (`/generate_204`, `/hotspot-detect.html`, etc.) with a redirect to the portal so a newly connected device is prompted automatically; the router/AP itself must still be configured (walled garden / hotspot mode) to intercept client traffic and point it at this app.
 - Actually cutting a device's network access off at expiry requires your router/RADIUS/hotspot software to poll or receive from `/api/access/validate`; this app cannot control hardware network access directly.
+- Run `reaper.py` as a separate worker with the same persistent `WIFI_DATA_DIR` to expire vouchers and request disconnects every 30 seconds. Render's current `render.yaml` only starts the web service; configure a worker service or use Docker Compose for the expiry worker.
 
 ## Optional: static Netlify frontend
 

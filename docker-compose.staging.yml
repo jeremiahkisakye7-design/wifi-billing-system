@@ -1,0 +1,36 @@
+services:
+  web-staging:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env.staging
+    environment:
+      WIFI_DATA_DIR: /data
+      FLASK_ENV: staging
+    ports:
+      - "5003:5002"
+    volumes:
+      - wifi-data-staging:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5002/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  voucher-reaper-staging:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env.staging
+    environment:
+      WIFI_DATA_DIR: /data
+      FLASK_ENV: staging
+    command: ["python", "reaper.py"]
+    volumes:
+      - wifi-data-staging:/data
+    depends_on:
+      web-staging:
+        condition: service_healthy
+
+volumes:
+  wifi-data-staging:

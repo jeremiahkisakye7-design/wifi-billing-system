@@ -1,7 +1,51 @@
 [build]
   publish = "."
 
+# Payments, vouchers and admin live on the Flask backend; Netlify only serves the static portal.
+[[redirects]]
+  from = "/api/*"
+  to = "https://wifi-billing-system-e14d.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/qr.png"
+  to = "https://wifi-billing-system-e14d.onrender.com/qr.png"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*.py"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/*.md"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/*.toml"
+  to = "/404.html"
+  status = 404
+  force = true
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "same-origin"
+    Strict-Transport-Security = "max-age=31536000"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"

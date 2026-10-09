@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 4 --threads 4 --timeout 30
+    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 30
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -40,12 +40,30 @@ services:
         sync: false
       - key: ADMIN_PASSWORD_HASH
         sync: false
+      - key: ADMIN_TOTP_SECRET
+        sync: false
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
       - key: MANUAL_PAYMENT_RECIPIENT
         sync: false
       - key: SUPPORT_INQUIRY_NUMBER
         sync: false
       - key: ROUTER_API_KEY
         sync: false
+      - key: AT_USERNAME
+        sync: false
+      - key: AT_API_KEY
+        sync: false
+      - key: AT_SENDER_ID
+        sync: false
+      - key: ROUTER_MAC_SIGNING_SECRET
+        sync: false
+      - key: MAX_DEVICES_PER_VOUCHER
+        value: "1"
+      - key: VOUCHER_ACTIVATION_TTL_DAYS
+        value: "30"
+      - key: SESSION_REAPER_INTERVAL_SECONDS
+        value: "30"
       - key: ROUTER_DISCONNECT_WEBHOOK_URL
         sync: false
       - key: RATE_LIMIT_STORAGE_URL

@@ -1,0 +1,36 @@
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      WIFI_DATA_DIR: /data
+      FLASK_ENV: production
+    ports:
+      - "5002:5002"
+    volumes:
+      - wifi-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5002/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  voucher-reaper:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      WIFI_DATA_DIR: /data
+      FLASK_ENV: production
+    command: ["python", "reaper.py"]
+    volumes:
+      - wifi-data:/data
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  wifi-data:

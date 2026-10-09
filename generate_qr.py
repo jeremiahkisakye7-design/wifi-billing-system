@@ -15,12 +15,12 @@ qr = qrcode.QRCode(
 qr.add_data(portal_url)
 qr.make(fit=True)
 
-# Create image with cyan/dark theme
-img = qr.make_image(fill_color='#00d4ff', back_color='#0a0e27')
+# Use a high-contrast blue-on-white palette for reliable camera scanning.
+img = qr.make_image(fill_color='#075bb5', back_color='#ffffff')
 img.save('wifi-billing-qr.png')
 
 print('✅ QR Code Generated Successfully!')
 print(f'📱 Scans to: {portal_url}')
-print('🎨 Design: Cyan WiFi theme (dark background)')
+print('Design: Blue modules on a white background')
 print('💾 File: wifi-billing-qr.png')
 print('📍 Folder: wifi billing system/')

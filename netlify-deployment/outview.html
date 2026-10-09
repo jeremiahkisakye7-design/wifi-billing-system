@@ -3,10 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Instant WiFi</title>
+    <title>WiFi Billing System | Instant WiFi Access</title>
+    <meta name="description" content="Choose a WiFi package, pay with MTN or Airtel mobile money, and get your voucher code instantly." />
+    <meta name="theme-color" content="#0ea5e9" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="WiFi Billing System | Instant WiFi Access" />
+    <meta property="og:description" content="Buy WiFi time with mobile money and connect in minutes." />
+    <link rel="icon" href="wifi-billing-icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="style.css" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="qrcode.min.js"></script>
   </head>
   <body>
     <div id="protectedInfoModal" class="modal hidden">
@@ -41,8 +47,9 @@
           </div>
           <h2>WiFi Access</h2>
           <p>Scan the QR code below to access the WiFi billing system</p>
-          <div id="qrCodeContainer" style="display: flex; justify-content: center; margin: 20px 0;"></div>
+          <div id="qrCodeContainer" class="qr-code-surface" role="img" aria-label="QR code linking to the WiFi portal"></div>
           <p class="qr-hint">📱 Use any smartphone camera or QR scanner app</p>
+          <p class="qr-hint" id="qrLinkText"></p>
           <button type="button" id="downloadQRBtn" class="primary-btn">⬇️ Download QR Code</button>
         </div>
       </div>
@@ -50,9 +57,12 @@
 
     <section id="publicPortal" class="public-portal">
       <div class="public-card">
-        <p class="eyebrow center">Simple WiFi access</p>
-        <h1>Instant WiFi</h1>
-        <p class="public-intro">Choose a package and pay for instant WiFi with mobile money. Your wallet will ask for your PIN.</p>
+        <header class="portal-hero">
+          <span class="portal-mark" aria-hidden="true">⌁</span>
+          <p class="eyebrow">SopraEnt WiFi</p>
+          <h1>Connect to WiFi</h1>
+          <p class="public-intro">Choose a package and approve the mobile money request on your phone.</p>
+        </header>
         <label class="public-field">
           <span>Mobile money network</span>
           <select id="publicProvider">
@@ -60,29 +70,103 @@
             <option value="airtel">Airtel Money</option>
           </select>
         </label>
+        <label class="public-field">
+          <span>Your phone number</span>
+          <input id="publicPhone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07XXXXXXXX" required />
+        </label>
         <div class="public-plans" role="group" aria-label="WiFi packages">
+          <button type="button" class="public-plan" data-public-plan="halfHour"><strong>30 Minutes</strong><span>UGX 100</span></button>
+          <button type="button" class="public-plan" data-public-plan="hourly"><strong>1 Hour</strong><span>UGX 200</span></button>
+          <button type="button" class="public-plan" data-public-plan="shortSession"><strong>6 Hours</strong><span>UGX 500</span></button>
           <button type="button" class="public-plan selected" data-public-plan="fullDay"><strong>1 Day</strong><span>UGX 1,000</span></button>
           <button type="button" class="public-plan" data-public-plan="weekly"><strong>1 Week</strong><span>UGX 4,000</span></button>
-          <button type="button" class="public-plan" data-public-plan="monthly"><strong>1 Month</strong><span>UGX 25,000</span></button>
+          <button type="button" class="public-plan" data-public-plan="monthly"><strong>1 Month + bonus week</strong><span>UGX 25,000</span></button>
+          <button type="button" class="public-plan" data-public-plan="quarterly"><strong>3 Months + bonus week</strong><span>UGX 70,000</span></button>
         </div>
+        <div class="public-plans" role="group" aria-label="Speed tier">
+          <button type="button" class="public-plan selected" data-speed-tier="basic"><strong>Basic speed</strong><span>1 device</span></button>
+          <button type="button" class="public-plan" data-speed-tier="premium"><strong>Premium speed</strong><span>3 devices, 1.6x price</span></button>
+        </div>
+        <label class="public-field public-checkbox">
+          <input id="publicAutoRenew" type="checkbox" />
+          <span>Auto-renew this plan when it expires</span>
+        </label>
+        <label class="public-field">
+          <span>Referral code (optional)</span>
+          <input id="publicReferralCode" type="text" placeholder="Friend's code" autocomplete="off" />
+        </label>
+        <label class="public-field">
+          <span>Coupon code (optional)</span>
+          <input id="publicCouponCode" type="text" placeholder="Enter coupon" autocomplete="off" maxlength="20" />
+          <small id="publicCouponStatus" aria-live="polite"></small>
+        </label>
         <div class="public-total" aria-live="polite">
           <span>WiFi price</span><strong id="publicPlanTotal">UGX 1,000</strong>
           <span>Service charge (5%)</span><strong id="publicServiceCharge">UGX 50</strong>
           <span class="public-total-label">Total to pay</span><strong id="publicAmountDue" class="public-total-value">UGX 1,050</strong>
         </div>
         <div class="public-payments">
-          <button type="button" id="publicPayBtn" class="primary-btn">Pay for instant WiFi</button>
+          <button type="button" id="publicPayBtn" class="primary-btn">Buy Access</button>
         </div>
         <p id="publicPaymentStatus" class="public-status" aria-live="polite">Your wallet will open. Enter the total shown above.</p>
+        <section id="paymentProgress" class="payment-progress hidden" aria-live="polite">
+          <header class="payment-hero">
+            <span class="payment-hero-icon" aria-hidden="true">▯</span>
+            <h2 id="paymentHeading">Check your phone</h2>
+            <p id="paymentSubheading">Mobile money payment request sent</p>
+          </header>
+          <p id="paymentAlert" class="payment-alert" role="status">Payment request sent. Approve it on your phone.</p>
+          <dl class="payment-details">
+            <div><dt>Amount</dt><dd id="paymentAmount">UGX 0</dd></div>
+            <div><dt>Reference</dt><dd id="paymentReference">—</dd></div>
+            <div><dt>Status</dt><dd id="paymentStateLabel">Processing</dd></div>
+          </dl>
+          <div class="payment-activity">
+            <span id="paymentSpinner" class="payment-spinner" aria-hidden="true"></span>
+            <span id="paymentSuccessIcon" class="payment-success-icon hidden" aria-hidden="true">✓</span>
+            <p id="paymentActivity">Waiting for payment…</p>
+            <p id="paymentNextStep">Enter your PIN on your phone to approve.</p>
+          </div>
+          <div id="paymentVoucherReveal" class="payment-voucher hidden">
+            <div><span>Your voucher</span><strong id="paymentVoucherCode">—</strong></div>
+            <button type="button" id="copyPaymentVoucherBtn" class="icon-action" aria-label="Copy voucher code" title="Copy voucher code">▢</button>
+          </div>
+          <p id="paymentCopyStatus" class="payment-copy-status" aria-live="polite"></p>
+          <div class="payment-controls">
+            <button type="button" id="pausePaymentChecksBtn" class="public-quiet-btn">Pause status checks</button>
+            <button type="button" id="resumePaymentChecksBtn" class="public-quiet-btn hidden">Resume status checks</button>
+          </div>
+        </section>
+        <div id="customerDashboard" class="customer-dashboard hidden">
+          <h3>Your WiFi access</h3>
+          <div class="dashboard-row"><span>Plan</span><strong id="dashboardPlan">—</strong></div>
+          <div class="dashboard-row"><span>Voucher</span><strong id="dashboardVoucher">—</strong></div>
+          <div class="dashboard-row"><span>Your referral code</span><strong id="dashboardReferralCode">—</strong></div>
+          <div class="dashboard-row"><span>Time remaining</span><strong id="dashboardTime">00:00:00</strong></div>
+          <div class="dashboard-row"><span>Data used</span><strong id="dashboardDataUsage">—</strong></div>
+          <p id="dashboardStatus" class="public-status">Active</p>
+          <div id="lowTimeWarning" class="low-time-warning hidden" role="alert">
+            <span id="lowTimeMessage">Your voucher is nearly expired.</span>
+            <button type="button" id="lowTimeRenewBtn" class="public-quiet-btn">Buy more time</button>
+          </div>
+          <button type="button" id="dashboardRenewBtn" class="public-secondary-btn">Renew / buy more time</button>
+          <ul id="dashboardHistoryList" class="dashboard-history"></ul>
+        </div>
         <div class="voucher-box">
           <label class="public-field">
             <span>Already have a WiFi voucher?</span>
             <input id="voucherInput" type="text" placeholder="Enter voucher code" autocomplete="off" />
           </label>
-          <button type="button" id="redeemVoucherBtn" class="public-secondary-btn">Use voucher</button>
+          <div class="voucher-actions">
+            <button type="button" id="redeemVoucherBtn" class="public-secondary-btn">Connect with voucher</button>
+            <button type="button" id="checkVoucherBalanceBtn" class="public-quiet-btn">Check balance</button>
+          </div>
           <p id="voucherStatus" class="public-status" aria-live="polite"></p>
         </div>
         <button type="button" id="adminAccessBtn" class="admin-access-btn">Admin</button>
+        <button type="button" id="publicInstallAppBtn" class="admin-access-btn hidden">Install app</button>
+        <button type="button" id="publicShowQRBtn" class="public-secondary-btn">📱 Show QR code to scan</button>
+        <p class="support-footer">Need help? Call support: <strong id="supportInquiryNumber">0704270565</strong></p>
       </div>
     </section>
 
@@ -93,11 +177,15 @@
         <form id="loginForm">
           <label>
             <span>Username</span>
-            <input id="adminUsername" type="text" value="admin" required />
+            <input id="adminUsername" type="text" autocomplete="username" required />
           </label>
           <label>
             <span>Password</span>
-            <input id="adminPassword" type="password" value="admin123" required />
+            <input id="adminPassword" type="password" autocomplete="current-password" required />
+          </label>
+          <label>
+            <span>Authenticator code</span>
+            <input id="adminTotpCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code" />
           </label>
           <button type="submit" class="primary-btn login-btn">Access dashboard</button>
         </form>
@@ -112,7 +200,8 @@
           <h1>WiFi Billing System</h1>
         </div>
         <div class="header-actions">
-          <a href="https://quiet-chimera-4dae8a.netlify.app/" class="ghost-btn" target="_blank" rel="noopener noreferrer">Open live portal</a>
+          <a href="/" class="ghost-btn">Open live portal</a>
+          <button type="button" id="installAppBtn" class="ghost-btn hidden">Install app</button>
           <button type="button" id="showQRBtn" class="ghost-btn">📱 Access QR</button>
           <button type="button" id="logoutBtn" class="ghost-btn hidden">Logout</button>
           <div class="status-pill">Live billing</div>
@@ -154,10 +243,6 @@
         </div>
         <form id="paymentSettingsForm" class="payment-settings-form">
           <label>
-            <span>Number that receives payment</span>
-            <input id="paymentRecipientInput" type="tel" inputmode="tel" placeholder="07XXXXXXXX" required />
-          </label>
-          <label>
             <span>Payment method</span>
             <select id="paymentMethodSetting">
               <option value="ussd">Mobile money wallet (USSD)</option>
@@ -170,6 +255,93 @@
           <button type="submit" class="primary-btn small-btn">Save payment settings</button>
           <p id="paymentSettingsStatus" class="payment-note" aria-live="polite"></p>
         </form>
+      </section>
+
+      <section class="voucher-admin-section panel">
+        <div class="panel-header">
+          <div>
+            <h2>Voucher access</h2>
+            <p class="admin-section-note">Issue, find, and manage customer access codes and connected devices.</p>
+          </div>
+          <button type="button" id="refreshVoucherAdminBtn" class="ghost-btn">Refresh access</button>
+        </div>
+        <form id="bulkVoucherForm" class="bulk-voucher-form">
+          <label><span>Quantity</span><input id="bulkVoucherQuantity" type="number" min="1" max="500" value="10" required /></label>
+          <label><span>Duration plan</span><select id="bulkVoucherPlan"><option value="halfHour">30 Minutes</option><option value="hourly">1 Hour</option><option value="shortSession">6 Hours</option><option value="fullDay" selected>1 Day</option><option value="weekly">7 Days</option><option value="monthly">1 Month</option><option value="quarterly">3 Months</option></select></label>
+          <label><span>Custom duration (minutes)</span><input id="bulkVoucherDuration" type="number" min="1" max="525600" placeholder="Use plan duration" /></label>
+          <label><span>Code prefix</span><input id="bulkVoucherPrefix" type="text" maxlength="4" placeholder="Optional" /></label>
+          <label><span>Devices per voucher</span><input id="bulkVoucherDevices" type="number" min="1" max="10" value="1" required /></label>
+          <label><span>Data cap (MB, optional)</span><input id="bulkVoucherDataLimit" type="number" min="1" placeholder="No cap" /></label>
+          <label><span>Speed limit (Mbps, optional)</span><input id="bulkVoucherSpeedLimit" type="number" min="1" placeholder="Router default" /></label>
+          <button type="submit" class="primary-btn small-btn">Generate vouchers</button>
+          <p id="bulkVoucherStatus" class="payment-note" aria-live="polite"></p>
+        </form>
+        <div class="voucher-admin-grid">
+          <section class="voucher-admin-list">
+            <div class="voucher-list-heading">
+              <h3>Voucher inventory</h3>
+              <input id="voucherAdminSearch" type="search" placeholder="Search code, name, or phone" aria-label="Search vouchers" />
+            </div>
+            <div id="adminVoucherList" class="admin-data-list" aria-live="polite"></div>
+          </section>
+          <section class="voucher-admin-list">
+            <div class="voucher-list-heading"><h3>Live device sessions</h3><span id="sessionCount" class="muted-badge">0</span></div>
+            <div id="adminSessionList" class="admin-data-list" aria-live="polite"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="voucher-admin-section panel" id="businessTools">
+        <div class="panel-header">
+          <div>
+            <h2>Reports, coupons and agents</h2>
+            <p class="admin-section-note">Revenue reports, discount coupons, reseller agents, plan limits and the audit log.</p>
+          </div>
+          <button type="button" id="refreshBusinessToolsBtn" class="ghost-btn">Refresh</button>
+        </div>
+
+        <h3>Revenue report</h3>
+        <form id="reportForm" class="bulk-voucher-form">
+          <label><span>From</span><input id="reportFrom" type="date" /></label>
+          <label><span>To</span><input id="reportTo" type="date" /></label>
+          <label><span>Group by</span><select id="reportGroup"><option value="day">Day</option><option value="week">Week</option><option value="month">Month</option></select></label>
+          <button type="submit" class="primary-btn small-btn">Run report</button>
+          <button type="button" id="exportReportBtn" class="ghost-btn">Export CSV</button>
+        </form>
+        <div id="reportOutput" class="admin-data-list" aria-live="polite"></div>
+
+        <h3>Plan speed and data limits</h3>
+        <form id="planLimitsForm" class="bulk-voucher-form">
+          <label><span>Plan</span><select id="planLimitPlan"><option value="halfHour">30 Minutes</option><option value="hourly">1 Hour</option><option value="shortSession">6 Hours</option><option value="fullDay" selected>1 Day</option><option value="weekly">7 Days</option><option value="monthly">1 Month</option><option value="quarterly">3 Months</option></select></label>
+          <label><span>Speed limit (Mbps)</span><input id="planLimitSpeed" type="number" min="1" placeholder="No limit" /></label>
+          <label><span>Data cap (MB)</span><input id="planLimitData" type="number" min="1" placeholder="No cap" /></label>
+          <button type="submit" class="primary-btn small-btn">Save plan limits</button>
+          <p id="planLimitsStatus" class="payment-note" aria-live="polite"></p>
+        </form>
+
+        <h3>Coupons</h3>
+        <form id="couponForm" class="bulk-voucher-form">
+          <label><span>Code</span><input id="couponCode" type="text" maxlength="20" required /></label>
+          <label><span>Percent off (1-90)</span><input id="couponPercent" type="number" min="1" max="90" /></label>
+          <label><span>or amount off (UGX)</span><input id="couponAmount" type="number" min="1" /></label>
+          <label><span>Max uses</span><input id="couponMaxUses" type="number" min="1" placeholder="Unlimited" /></label>
+          <label><span>Expires</span><input id="couponExpires" type="date" /></label>
+          <button type="submit" class="primary-btn small-btn">Create coupon</button>
+          <p id="couponStatus" class="payment-note" aria-live="polite"></p>
+        </form>
+        <div id="couponList" class="admin-data-list"></div>
+
+        <h3>Reseller agents</h3>
+        <form id="agentForm" class="bulk-voucher-form">
+          <label><span>Agent name</span><input id="agentName" type="text" maxlength="80" required /></label>
+          <label><span>Commission % (0-50)</span><input id="agentCommission" type="number" min="0" max="50" value="10" required /></label>
+          <button type="submit" class="primary-btn small-btn">Create agent</button>
+          <p id="agentStatus" class="payment-note" aria-live="polite"></p>
+        </form>
+        <div id="agentList" class="admin-data-list"></div>
+
+        <h3>Audit log</h3>
+        <div id="auditLogList" class="admin-data-list"></div>
       </section>
 
       <main class="dashboard">
@@ -215,6 +387,8 @@
                 <label>
                   <span>Plan</span>
                   <select id="planType" required>
+                    <option value="halfHour">30 Minutes - UGX 100</option>
+                    <option value="hourly">1 Hour - UGX 200</option>
                     <option value="shortSession">Short Session - UGX 500</option>
                     <option value="fullDay">Full Day - UGX 1,000</option>
                     <option value="weekly">Weekly - UGX 4,000</option>
@@ -254,6 +428,12 @@
                   <label><input type="checkbox" value="speed" class="addon" /> Speed upgrade</label>
                   <label><input type="checkbox" value="support" class="addon" /> Premium support</label>
                 </div>
+                <label>
+                  <span>Router option</span>
+                  <select id="routerOption">
+                    <option value="">No router selected</option>
+                  </select>
+                </label>
               </div>
 
               <div class="receipt-panel" aria-live="polite">
@@ -455,24 +635,30 @@
       </section>
     </div>
 
-    <script src="script.js"></script>
+    <script src="script.js?v=3"></script>
     <script>
       // Generate QR code on page load
       window.addEventListener('load', () => {
-        const appUrl = 'https://quiet-chimera-4dae8a.netlify.app';
+        const appUrl = window.location.origin;
         if (document.getElementById('qrCodeContainer').children.length === 0) {
           new QRCode(document.getElementById('qrCodeContainer'), {
             text: appUrl,
-            width: 200,
-            height: 200,
-            colorDark: '#00d4ff',
+            width: 240,
+            height: 240,
+            colorDark: '#075bb5',
             colorLight: '#ffffff',
             correctLevel: QRCode.CorrectLevel.H
           });
         }
+        const qrLinkText = document.getElementById('qrLinkText');
+        if (qrLinkText) qrLinkText.textContent = appUrl;
       });
 
       document.getElementById('showQRBtn')?.addEventListener('click', () => {
+        document.getElementById('qrModal').classList.remove('hidden');
+      });
+
+      document.getElementById('publicShowQRBtn')?.addEventListener('click', () => {
         document.getElementById('qrModal').classList.remove('hidden');
       });
 
