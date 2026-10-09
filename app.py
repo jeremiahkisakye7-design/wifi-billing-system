@@ -1,4 +1,4 @@
-import json
+﻿import json
 import hashlib
 import hmac
 import logging
@@ -678,47 +678,7 @@ def init_db():
         )
         """
     )
-    if conn.execute("SELECT COUNT(*) AS total FROM routers").fetchone()["total"] == 0:
-        conn.executemany(
-            "INSERT INTO routers (id, name, model, ip, status, clients) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                ("router-1", "Main Router", "TP-Link Archer C7", "192.168.1.1", "online", 8),
-                ("router-2", "Backup Router", "D-Link DIR-882", "192.168.1.2", "online", 3),
-            ],
-        )
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO routers (id, name, model, ip, status, clients, details)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "router-cpe-b07",
-            "CPE_BE97",
-            "B07",
-            "192.168.100.1",
-            "online",
-            0,
-            json.dumps({
-                "mac": "74:F8:DB:63:BE:97",
-                "imei": "353899266529310",
-                "serialNumber": "GUVECM160224",
-                "power": "5V / 2A",
-                "wifiKey": "1234567890",
-                "captivePortalUrl": "https://wifi-billing-system-e14d.onrender.com/",
-            }),
-        ),
-    )
-    conn.execute(
-        "UPDATE routers SET details = ? WHERE id = 'router-cpe-b07'",
-        (json.dumps({
-            "mac": "74:F8:DB:63:BE:97",
-            "imei": "353899266529310",
-            "serialNumber": "GUVECM160224",
-            "power": "5V / 2A",
-            "wifiKey": "1234567890",
-            "captivePortalUrl": "https://wifi-billing-system-e14d.onrender.com/",
-        }),),
-    )
+    conn.execute("DELETE FROM routers WHERE id IN ('router-1', 'router-2', 'router-cpe-b07')")
 
     existing = conn.execute("SELECT COUNT(*) AS total FROM clients").fetchone()["total"]
     if existing == 0:
